@@ -8,58 +8,44 @@ try {
     pdfParse = null;
 }
 
+const DEFAULT_CLINICAL_SUMMARY =
+    "No significant health threats or abnormalities detected in the report.";
+
 function buildFallbackSummary(text, parsedData, riskFlags) {
-    const sentences = normalizeWhitespace(text)
-        .split(/(?<=[.!?])\s+/)
-        .map((sentence) => sentence.trim())
-        .filter(Boolean);
+    return DEFAULT_CLINICAL_SUMMARY;
+}
 
-    const coreSummary =
-        sentences.slice(0, 3).join(" ") || "Medical report text was extracted but a detailed summary was not available.";
-
-    const highlights = [];
-
-    if (parsedData.conditions.length) {
-        highlights.push(`Conditions noted: ${parsedData.conditions.slice(0, 4).join(", ")}.`);
+function looksLikeRawLabText(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+        return false;
     }
 
-    if (parsedData.medications.length) {
-        highlights.push(`Medications noted: ${parsedData.medications.slice(0, 4).join(", ")}.`);
+    const rangeCount = (text.match(/\b\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\b/g) || []).length;
+    const unitCount = (
+        text.match(/\b(?:mg\/dl|g\/dl|mmol\/l|iu\/l|u\/l|rbc|wbc|hematocrit|hemoglobin|platelet|mcv|mch|mchc)\b/gi) || []
+    ).length;
+
+    return text.length > 120 && (rangeCount >= 2 || unitCount >= 3);
+}
+
+function normalizeClinicalSummary(value) {
+    const summary = String(value || "").trim();
+
+    if (!summary || looksLikeRawLabText(summary)) {
+        return DEFAULT_CLINICAL_SUMMARY;
     }
 
-    if (riskFlags.length) {
-        highlights.push(`Risk flags: ${riskFlags.map((flag) => flag.label).slice(0, 3).join(", ")}.`);
-    }
-
-    return [coreSummary, ...highlights].join(" ").trim();
+    return summary;
 }
 
 function buildFallbackMedicalEvents(parsedData, riskFlags) {
     const events = [...(parsedData.medicalEvents || [])];
-
-    for (const condition of parsedData.conditions || []) {
-        events.push({
-            date: "Unknown",
-            type: "Diagnosis",
-            finding: condition,
-            risk: `${condition} management`,
-            sourceText: `Detected condition: ${condition}`
-        });
-    }
-
-    for (const medication of parsedData.medications || []) {
-        events.push({
-            date: "Unknown",
-            type: "Medication",
-            finding: medication,
-            risk: "Medication reconciliation",
-            sourceText: `Detected medication: ${medication}`
-        });
-    }
+    const eventDate = parsedData.reportDate || "Unknown";
 
     for (const riskFlag of riskFlags || []) {
         events.push({
-            date: "Unknown",
+            date: eventDate,
             type: "Risk Flag",
             finding: riskFlag.label,
             risk: riskFlag.reason || riskFlag.label,
@@ -68,9 +54,13 @@ function buildFallbackMedicalEvents(parsedData, riskFlags) {
     }
 
     const seen = new Set();
+    const deduped = events.filter((event) => {
+        const finding = String(event?.finding || "").trim();
+        if (!finding || finding.length < 6) {
+            return false;
+        }
 
-    return events.filter((event) => {
-        const key = `${event.date}|${event.type}|${event.finding}`;
+        const key = `${event.date}|${event.type}|${finding}`;
         if (seen.has(key)) {
             return false;
         }
@@ -78,6 +68,56 @@ function buildFallbackMedicalEvents(parsedData, riskFlags) {
         seen.add(key);
         return true;
     });
+
+    return deduped.sort((a, b) => {
+        const aKnown = a.date && a.date !== "Unknown";
+        const bKnown = b.date && b.date !== "Unknown";
+
+        if (aKnown && bKnown) {
+            return new Date(a.date) - new Date(b.date);
+        }
+
+        if (aKnown && !bKnown) {
+            return -1;
+        }
+
+        if (!aKnown && bKnown) {
+            return 1;
+        }
+
+        return String(a.finding).localeCompare(String(b.finding));
+    });
+}
+
+function buildPatientHistoryEntry(parsedData, riskFlags, llmResult = null) {
+    const base = {
+        date: parsedData.reportDate || "Unknown",
+        reportType: parsedData.reportType || "Medical Report",
+        keyFindings: parsedData.keyFindings || "",
+        diagnosis: parsedData.diagnosis || "",
+        riskFlags: (riskFlags || []).map((flag) => flag.label),
+        recommendedFollowUp: parsedData.recommendedFollowUp || ""
+    };
+
+    if (!llmResult || typeof llmResult !== "object") {
+        return base;
+    }
+
+    return {
+        ...base,
+        date: llmResult.patientHistoryEntry?.date || llmResult.date || base.date,
+        reportType: llmResult.patientHistoryEntry?.reportType || llmResult.reportType || base.reportType,
+        keyFindings: llmResult.patientHistoryEntry?.keyFindings || llmResult.keyFindings || base.keyFindings,
+        diagnosis: llmResult.patientHistoryEntry?.diagnosis || llmResult.diagnosis || base.diagnosis,
+        riskFlags:
+            llmResult.patientHistoryEntry?.riskFlags ||
+            llmResult.riskFlags?.map((flag) => flag.label) ||
+            base.riskFlags,
+        recommendedFollowUp:
+            llmResult.patientHistoryEntry?.recommendedFollowUp ||
+            llmResult.recommendedFollowUp ||
+            base.recommendedFollowUp
+    };
 }
 
 async function extractTextFromPdf(pdfInput) {
@@ -102,22 +142,48 @@ async function callLlmForSummary(text, parsedData, riskFlags, options = {}) {
         return null;
     }
 
-    const prompt = `
-You are a clinical documentation assistant.
-Summarize the medical report into concise plain English.
+        const prompt = `
+You are a medical data interpreter. Analyze the following medical report text and extract clinically meaningful insights.
+
+Return structured output containing:
+1. reportDate
+2. probableConditions
+3. keyAbnormalFindings
+4. clinicalSummary
+5. finalConclusion
+
+Do NOT repeat raw lab tables or numeric ranges unless they indicate abnormalities.
+Extract only the final clinical interpretation of the report. Do not repeat lab values.
+The clinicalSummary must explain the medical meaning of the report in simple medical language.
+If no abnormalities are found, respond with: "No significant health threats or abnormalities detected in the report."
+
+Focus on medical meaning rather than listing values.
+
 Return strict JSON with the following shape:
 {
-  "summary": "string",
-  "conditions": ["string"],
-  "medications": ["string"],
-  "riskFlags": [{"label":"string","severity":"low|medium|high|critical","reason":"string"}],
-  "medicalEvents": [{"date":"YYYY-MM-DD|Unknown","type":"string","finding":"string","risk":"string","sourceText":"string"}]
+    "reportDate": "YYYY-MM-DD|Unknown",
+    "reportType": "string",
+    "conditionsDetected": ["string"],
+    "significantAbnormalities": ["string"],
+    "clinicalSummary": "string",
+    "finalConclusion": "string",
+    "riskFlags": [{"label":"string","severity":"low|medium|high|critical","reason":"string"}],
+    "timelineEntry": {
+        "date": "YYYY-MM-DD|Unknown",
+        "conclusion": "string"
+    }
 }
 
 Known extracted conditions: ${JSON.stringify(parsedData.conditions)}
 Known extracted medications: ${JSON.stringify(parsedData.medications)}
 Known extracted risk flags: ${JSON.stringify(riskFlags)}
-Medical events: ${JSON.stringify(parsedData.medicalEvents)}
+Detected report date: ${parsedData.reportDate}
+Detected report type: ${parsedData.reportType}
+Extracted key findings: ${parsedData.keyFindings}
+Extracted diagnosis: ${parsedData.diagnosis}
+Extracted follow-up: ${parsedData.recommendedFollowUp}
+Extracted abnormal results: ${JSON.stringify(parsedData.abnormalResults)}
+Structured medical events: ${JSON.stringify(parsedData.medicalEvents)}
 Report text:
 ${text.slice(0, 12000)}
 `.trim();
@@ -152,19 +218,35 @@ ${text.slice(0, 12000)}
     return candidate;
 }
 
-async function summarizeMedicalReport({ pdfBuffer, text, reportId, fileName } = {}) {
+async function summarizeMedicalReport({ pdfBuffer, text, reportId, fileName, reportType } = {}) {
     const extractedText = text || (pdfBuffer ? await extractTextFromPdf(pdfBuffer) : "");
     const cleanedText = normalizeWhitespace(extractedText);
-    const parsedData = parseMedicalData(extractedText);
+    const parsedData = parseMedicalData(extractedText, {
+        fileName,
+        reportType
+    });
     const riskFlags = detectRiskFlags(cleanedText, parsedData);
 
     if (!cleanedText) {
         return {
             summary: "No readable medical text was extracted from the report.",
+            keyFindings: "",
+            diagnosis: "",
+            recommendedFollowUp: "",
+            reportType: "Medical Report",
+            date: "Unknown",
             conditions: [],
             medications: [],
             riskFlags: [],
             medicalEvents: [],
+            patientHistoryEntry: {
+                date: "Unknown",
+                reportType: "Medical Report",
+                keyFindings: "",
+                diagnosis: "",
+                riskFlags: [],
+                recommendedFollowUp: ""
+            },
             rawText: ""
         };
     }
@@ -176,13 +258,47 @@ async function summarizeMedicalReport({ pdfBuffer, text, reportId, fileName } = 
         });
 
         if (llmResult) {
+            const fallbackEvents = buildFallbackMedicalEvents(parsedData, riskFlags);
+            const historyEntry = buildPatientHistoryEntry(parsedData, riskFlags, llmResult);
+            const conditionsDetected =
+                llmResult.conditionsDetected || llmResult.probableConditions || llmResult.conditions || parsedData.conditions;
+            const significantAbnormalities =
+                llmResult.significantAbnormalities || llmResult.keyAbnormalFindings || [];
+            const clinicalSummary =
+                normalizeClinicalSummary(
+                    llmResult.clinicalSummary ||
+                    llmResult.summary ||
+                    buildFallbackSummary(cleanedText, parsedData, riskFlags)
+                );
+            const finalConclusion =
+                llmResult.finalConclusion || llmResult.diagnosis || historyEntry.diagnosis || clinicalSummary;
+            const reportDate = llmResult.reportDate || llmResult.date || historyEntry.date;
+            const timelineEntry = {
+                date: llmResult.timelineEntry?.date || reportDate,
+                conclusion:
+                    llmResult.timelineEntry?.conclusion ||
+                    finalConclusion ||
+                    "No significant abnormalities detected."
+            };
+
             return {
-                summary: llmResult.summary || buildFallbackSummary(cleanedText, parsedData, riskFlags),
-                conditions: llmResult.conditions || parsedData.conditions,
+                summary: clinicalSummary,
+                keyFindings: llmResult.keyFindings || historyEntry.keyFindings,
+                diagnosis: llmResult.diagnosis || historyEntry.diagnosis,
+                recommendedFollowUp: llmResult.recommendedFollowUp || historyEntry.recommendedFollowUp,
+                reportType: llmResult.reportType || historyEntry.reportType,
+                date: reportDate,
+                conditionsDetected,
+                conditions: conditionsDetected,
                 medications: llmResult.medications || parsedData.medications,
                 riskFlags: llmResult.riskFlags || riskFlags,
-                medicalEvents:
-                    llmResult.medicalEvents || buildFallbackMedicalEvents(parsedData, riskFlags),
+                medicalEvents: llmResult.medicalEvents || fallbackEvents,
+                significantAbnormalities,
+                abnormalFindings: significantAbnormalities,
+                clinicalSummary,
+                finalConclusion,
+                timelineEntry,
+                patientHistoryEntry: historyEntry,
                 rawText: extractedText
             };
         }
@@ -192,12 +308,30 @@ async function summarizeMedicalReport({ pdfBuffer, text, reportId, fileName } = 
         }
     }
 
+    const fallbackEvents = buildFallbackMedicalEvents(parsedData, riskFlags);
+    const historyEntry = buildPatientHistoryEntry(parsedData, riskFlags);
+
     return {
         summary: buildFallbackSummary(cleanedText, parsedData, riskFlags),
+        keyFindings: historyEntry.keyFindings,
+        diagnosis: historyEntry.diagnosis,
+        recommendedFollowUp: historyEntry.recommendedFollowUp,
+        reportType: historyEntry.reportType,
+        date: historyEntry.date,
+        conditionsDetected: parsedData.conditions,
         conditions: parsedData.conditions,
         medications: parsedData.medications,
         riskFlags,
-        medicalEvents: buildFallbackMedicalEvents(parsedData, riskFlags),
+        medicalEvents: fallbackEvents,
+        significantAbnormalities: [],
+        abnormalFindings: [],
+        clinicalSummary: DEFAULT_CLINICAL_SUMMARY,
+        finalConclusion: "No major abnormalities detected in the report.",
+        timelineEntry: {
+            date: historyEntry.date,
+            conclusion: "No significant abnormalities detected."
+        },
+        patientHistoryEntry: historyEntry,
         rawText: extractedText
     };
 }

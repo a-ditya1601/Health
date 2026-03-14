@@ -17,6 +17,7 @@ export function AuthProvider({ children }) {
     const [isConnecting, setIsConnecting] = useState(false);
     const [authError, setAuthError] = useState("");
     const [hasMetaMask, setHasMetaMask] = useState(false);
+    const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
         let active = true;
@@ -28,6 +29,9 @@ export function AuthProvider({ children }) {
             }
 
             if (!installed) {
+                if (active) {
+                    setIsReady(true);
+                }
                 return;
             }
 
@@ -39,6 +43,10 @@ export function AuthProvider({ children }) {
             } catch (error) {
                 if (active) {
                     setAuthError(error.message || "Unable to restore wallet session");
+                }
+            } finally {
+                if (active) {
+                    setIsReady(true);
                 }
             }
         }
@@ -104,9 +112,10 @@ export function AuthProvider({ children }) {
             hasMetaMask,
             installUrl: METAMASK_DOWNLOAD_URL,
             isAuthenticated: Boolean(address),
-            isConnecting
+            isConnecting,
+            isReady
         }),
-        [address, authError, hasMetaMask, isConnecting]
+        [address, authError, hasMetaMask, isConnecting, isReady]
     );
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

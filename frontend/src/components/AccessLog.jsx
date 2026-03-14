@@ -1,17 +1,26 @@
 import React from "react";
 
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+});
+
 function formatDate(value) {
     if (!value) {
         return "No access recorded";
     }
 
-    return new Date(value).toLocaleString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-    });
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return "Date unavailable";
+    }
+
+    return dateFormatter.format(date);
 }
 
 export default function AccessLog({ analytics = [] }) {

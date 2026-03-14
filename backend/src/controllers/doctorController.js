@@ -1,7 +1,13 @@
 const blockchainService = require("../services/blockchainService");
+const {
+    ensureWalletMatch,
+    requireAuthenticatedWallet
+} = require("../middleware/authMiddleware");
 
 function handleError(res, error) {
-    const statusCode = error.message?.toLowerCase().includes("not found") ? 404 : 400;
+    const statusCode =
+        error.statusCode ||
+        (error.message?.toLowerCase().includes("not found") ? 404 : 400);
     return res.status(statusCode).json({
         success: false,
         message: error.message || "Doctor request failed"
@@ -28,7 +34,15 @@ async function registerDoctor(req, res) {
 
 async function requestAccess(req, res) {
     try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
         const { patientAddress, doctorAddress, reason } = req.body;
+
+        ensureWalletMatch(
+            doctorAddress,
+            authenticatedWallet,
+            "Doctors can only request access for their own wallet"
+        );
+
         const request = await blockchainService.createAccessRequest({
             patientAddress,
             doctorAddress,
@@ -39,6 +53,33 @@ async function requestAccess(req, res) {
             success: true,
             message: "Access request submitted",
             data: request
+        });
+    } catch (error) {
+        return handleError(res, error);
+    }
+}
+
+async function unlockAccess(req, res) {
+    try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
+        const { patientAddress, doctorAddress, accessKey } = req.body;
+
+        ensureWalletMatch(
+            doctorAddress,
+            authenticatedWallet,
+            "Doctors can only unlock records for their own wallet"
+        );
+
+        const records = await blockchainService.unlockPatientRecordsWithAccessKey({
+            doctorAddress,
+            patientAddress,
+            accessKey
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Records unlocked successfully",
+            data: records
         });
     } catch (error) {
         return handleError(res, error);
@@ -95,6 +136,7 @@ async function getConsentLogs(req, res) {
 module.exports = {
     registerDoctor,
     requestAccess,
+    unlockAccess,
     requestEmergencyAccess,
     getAccessibleRecords,
     getConsentLogs

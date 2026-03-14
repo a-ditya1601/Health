@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "../../context/AuthContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000/api";
 
@@ -62,7 +63,8 @@ function badgeForStatus(status) {
 }
 
 export default function PatientAccessControlPage() {
-    const [patientAddress, setPatientAddress] = useState("0xPatient001...7f3c");
+    const { address: authenticatedPatientAddress } = useAuth();
+    const [patientAddress, setPatientAddress] = useState("");
     const [doctorAddress, setDoctorAddress] = useState("");
     const [doctorName, setDoctorName] = useState("");
     const [specialty, setSpecialty] = useState("General Practice");
@@ -74,6 +76,10 @@ export default function PatientAccessControlPage() {
     const [errorMessage, setErrorMessage] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [activeDoctorAddress, setActiveDoctorAddress] = useState("");
+
+    useEffect(() => {
+        setPatientAddress(authenticatedPatientAddress || "");
+    }, [authenticatedPatientAddress]);
 
     const metrics = useMemo(() => {
         const active = accessList.filter((item) => item.status === "active").length;
@@ -103,7 +109,8 @@ export default function PatientAccessControlPage() {
             const response = await fetch(`${API_BASE}/patients/access/grant`, {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
                 },
                 body: JSON.stringify(payload)
             });
@@ -157,7 +164,8 @@ export default function PatientAccessControlPage() {
             const response = await fetch(`${API_BASE}/patients/access/revoke`, {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
                 },
                 body: JSON.stringify({
                     patientAddress,

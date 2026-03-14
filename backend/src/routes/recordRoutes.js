@@ -8,5 +8,6 @@ router.post("/upload", upload.single("file"), recordController.uploadMedicalReco
 router.get("/patient/:patientAddress", recordController.getPatientRecords);
 router.get("/doctor/:doctorAddress", recordController.getDoctorRecords);
 router.get("/:recordId", recordController.getRecordById);
+router.delete("/:recordId", recordController.deleteMedicalRecord);
 
 module.exports = router;

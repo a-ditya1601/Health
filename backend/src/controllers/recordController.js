@@ -1,9 +1,10 @@
 const blockchainService = require("../services/blockchainService");
 const encryptionService = require("../services/encryptionService");
 const ipfsService = require("../services/ipfsService");
-const aiSummaryService = require("../services/aiSummaryService");
+const aiService = require("../services/aiService");
 const AccessLog = require("../../models/AccessLog");
 const Counter = require("../../models/Counter");
+const MedicalRecord = require("../../models/MedicalRecord");
 const {
     ensureWalletMatch,
     normalizeWalletAddress,
@@ -67,6 +68,52 @@ async function extractTextFromPdf(file) {
     return file.buffer.toString("utf8").replace(/[^\x20-\x7E\n\r\t]/g, " ");
 }
 
+function buildFallbackMedicalSummary({ reportText, recordType }) {
+    const fallbackClinicalSummary =
+        "No significant health threats or abnormalities detected in the report.";
+
+    return {
+        reportDate: "Unknown",
+        reportType: recordType || "Medical Report",
+        conditionsDetected: [],
+        significantAbnormalities: [],
+        conditions: [],
+        abnormalFindings: [],
+        clinicalSummary: fallbackClinicalSummary,
+        finalConclusion: fallbackClinicalSummary,
+        riskFlags: [],
+        medicalSummary: fallbackClinicalSummary
+    };
+}
+
+function buildFallbackTimelineEntry({ reportType, aiSummary }) {
+    return {
+        date: aiSummary.reportDate || "Unknown",
+        conclusion:
+            aiSummary.finalConclusion ||
+            aiSummary.clinicalSummary ||
+            "No significant abnormalities detected."
+    };
+}
+
+function toTimelineEvents(timelineEntry) {
+    const conclusion = String(timelineEntry?.conclusion || "").trim();
+
+    if (!conclusion) {
+        return [];
+    }
+
+    return [
+        {
+            date: timelineEntry.date || "Unknown",
+            type: "Clinical Conclusion",
+            finding: conclusion,
+            risk: "",
+            sourceText: conclusion
+        }
+    ];
+}
+
 async function uploadMedicalRecord(req, res) {
     try {
         const authenticatedWallet = requireAuthenticatedWallet(req);
@@ -81,16 +128,76 @@ async function uploadMedicalRecord(req, res) {
         }
 
         const extractedText = await extractTextFromPdf(file);
-        const aiSummary = await aiSummaryService.generateSummary({
-            text: extractedText,
-            fileName: file.originalname,
-            recordType
-        });
-        const timelineEvents = Array.isArray(aiSummary.timelineEvents)
-            ? aiSummary.timelineEvents
-            : Array.isArray(aiSummary.timeline)
-              ? aiSummary.timeline
-              : [];
+
+        let aiSummary;
+        let timelineEntry;
+
+        try {
+            const medicalSummary = await aiService.generateMedicalSummary(extractedText);
+            const generatedTimelineEntry = await aiService.generateTimelineEntry(extractedText);
+
+            aiSummary = {
+                conditionsDetected: Array.isArray(medicalSummary.conditionsDetected)
+                    ? medicalSummary.conditionsDetected
+                    : Array.isArray(medicalSummary.conditions)
+                        ? medicalSummary.conditions
+                        : [],
+                significantAbnormalities: Array.isArray(medicalSummary.significantAbnormalities)
+                    ? medicalSummary.significantAbnormalities
+                    : Array.isArray(medicalSummary.abnormalFindings)
+                        ? medicalSummary.abnormalFindings
+                    : [],
+                conditions: Array.isArray(medicalSummary.conditionsDetected)
+                    ? medicalSummary.conditionsDetected
+                    : Array.isArray(medicalSummary.conditions)
+                        ? medicalSummary.conditions
+                        : [],
+                abnormalFindings: Array.isArray(medicalSummary.significantAbnormalities)
+                    ? medicalSummary.significantAbnormalities
+                    : Array.isArray(medicalSummary.abnormalFindings)
+                    ? medicalSummary.abnormalFindings
+                    : [],
+                clinicalSummary:
+                    medicalSummary.clinicalSummary ||
+                    "No significant health threats or abnormalities detected in the report.",
+                finalConclusion:
+                    medicalSummary.finalConclusion ||
+                    medicalSummary.clinicalSummary ||
+                    "No significant health threats or abnormalities detected in the report.",
+                reportType: medicalSummary.reportType || recordType || "Medical Report",
+                reportDate: medicalSummary.reportDate || generatedTimelineEntry.date || "Unknown",
+                riskFlags: Array.isArray(medicalSummary.riskFlags)
+                    ? medicalSummary.riskFlags
+                    : [],
+                medicalSummary:
+                    medicalSummary.clinicalSummary ||
+                    medicalSummary.finalConclusion ||
+                    "No significant health threats or abnormalities detected in the report.",
+                timelineEntry: generatedTimelineEntry,
+                rawText: extractedText
+            };
+            timelineEntry = {
+                date: generatedTimelineEntry.date || aiSummary.reportDate || "Unknown",
+                conclusion:
+                    generatedTimelineEntry.conclusion ||
+                    aiSummary.finalConclusion ||
+                    "No significant abnormalities detected."
+            };
+        } catch (error) {
+            console.error("AI generation failed. Falling back to local summary:", error.message || error);
+            aiSummary = buildFallbackMedicalSummary({
+                reportText: extractedText,
+                recordType
+            });
+            timelineEntry = buildFallbackTimelineEntry({
+                reportType: recordType,
+                aiSummary
+            });
+            aiSummary.timelineEntry = timelineEntry;
+            aiSummary.rawText = extractedText;
+        }
+
+        const timelineEvents = toTimelineEvents(timelineEntry);
 
         const { encryptedBuffer, accessKeyEnvelope, encryptionMetadata } =
             encryptionService.encryptFile(file.buffer, {
@@ -120,17 +227,48 @@ async function uploadMedicalRecord(req, res) {
             }
         });
 
+        await MedicalRecord.findOneAndUpdate(
+            { recordId: Number(record.recordId) },
+            {
+                $set: {
+                    timelineEntry: {
+                        ...timelineEntry,
+                        date:
+                            timelineEntry.date &&
+                            timelineEntry.date !== "Unknown" &&
+                            !Number.isNaN(new Date(timelineEntry.date).getTime())
+                                ? timelineEntry.date
+                                : new Date(record.createdAt).toISOString()
+                    }
+                }
+            }
+        );
+
+        const resolvedTimelineEntry = {
+            ...timelineEntry,
+            date:
+                timelineEntry.date &&
+                timelineEntry.date !== "Unknown" &&
+                !Number.isNaN(new Date(timelineEntry.date).getTime())
+                    ? timelineEntry.date
+                    : new Date(record.createdAt).toISOString()
+        };
+
         return res.status(201).json({
             success: true,
             message: "Medical record uploaded successfully",
             data: {
-                record,
+                record: {
+                    ...record,
+                    timelineEntry: resolvedTimelineEntry
+                },
                 storage: ipfsUpload,
                 encryption: {
                     ...encryptionMetadata,
                     accessKeyEnvelope
                 },
-                aiSummary
+                aiSummary,
+                timelineEntry: resolvedTimelineEntry
             }
         });
     } catch (error) {
@@ -206,9 +344,30 @@ async function getRecordById(req, res) {
     }
 }
 
+async function deleteMedicalRecord(req, res) {
+    try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
+        const { recordId } = req.params;
+
+        const result = await blockchainService.deleteMedicalRecord({
+            patientAddress: authenticatedWallet,
+            recordId
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Medical record deleted successfully",
+            data: result
+        });
+    } catch (error) {
+        return handleError(res, error);
+    }
+}
+
 module.exports = {
     uploadMedicalRecord,
     getPatientRecords,
     getDoctorRecords,
-    getRecordById
+    getRecordById,
+    deleteMedicalRecord
 };

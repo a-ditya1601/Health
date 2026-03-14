@@ -2,20 +2,43 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import AccessLog from "../../components/AccessLog";
 import { useAuth } from "../../context/AuthContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000/api";
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+});
+
+function shouldRedirectToAuth(message) {
+    const normalized = String(message || "").toLowerCase();
+    return (
+        normalized.includes("patient is not registered") ||
+        normalized.includes("authentication required") ||
+        normalized.includes("wallet address is required") ||
+        normalized.includes("not authorized")
+    );
+}
 
 function formatDate(value) {
-    return new Date(value).toLocaleString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-    });
+    if (!value) {
+        return "No date available";
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return "Date unavailable";
+    }
+
+    return dateFormatter.format(date);
 }
 
 function severityClasses(severity) {
@@ -36,6 +59,20 @@ function actionClasses(action) {
     return "bg-slate-100 text-slate-700";
 }
 
+function requestStatusClasses(status) {
+    const normalized = String(status || "").toLowerCase();
+
+    if (normalized === "approved") {
+        return "bg-emerald-100 text-emerald-700";
+    }
+
+    if (normalized === "rejected") {
+        return "bg-rose-100 text-rose-700";
+    }
+
+    return "bg-amber-100 text-amber-700";
+}
+
 function formatLogDetails(details) {
     if (!details) {
         return "No additional details";
@@ -51,35 +88,44 @@ function formatLogDetails(details) {
 }
 
 function getTimelineEvents(record) {
-    if (Array.isArray(record?.timelineEvents) && record.timelineEvents.length) {
-        return record.timelineEvents;
+    const entry =
+        record?.timelineEntry ||
+        record?.aiSummary?.timelineEntry ||
+        (record?.aiSummary?.finalConclusion
+            ? {
+                  date: record?.aiSummary?.reportDate || record?.createdAt || null,
+                  conclusion: record?.aiSummary?.finalConclusion
+              }
+            : null);
+
+    if (!entry) {
+        return [];
     }
 
-    if (Array.isArray(record?.aiSummary?.timelineEvents) && record.aiSummary.timelineEvents.length) {
-        return record.aiSummary.timelineEvents;
+    const conclusion = String(entry.conclusion || record?.aiSummary?.finalConclusion || "").trim();
+    const parsedDate = new Date(entry.date || "");
+    const fallbackDate = record?.createdAt || record?.uploadedAt || null;
+    const resolvedDate =
+        entry.date &&
+        entry.date !== "Unknown" &&
+        !Number.isNaN(parsedDate.getTime())
+            ? entry.date
+            : fallbackDate;
+
+    if (!conclusion) {
+        return [];
     }
 
-    if (Array.isArray(record?.aiSummary?.timeline)) {
-        return record.aiSummary.timeline;
-    }
-
-    return [];
+    return [
+        {
+            date: resolvedDate,
+            conclusion
+        }
+    ];
 }
 
 function formatTimelineFinding(event) {
-    if (event.finding && event.risk) {
-        return `${event.finding} (${event.risk})`;
-    }
-
-    if (event.finding) {
-        return event.finding;
-    }
-
-    if (event.event) {
-        return event.event;
-    }
-
-    return "Clinical event recorded";
+    return event?.conclusion || "No significant abnormalities detected.";
 }
 
 function StatCard({ label, value, hint }) {
@@ -108,25 +154,37 @@ function SectionShell({ title, eyebrow, children, action }) {
 }
 
 export default function PatientDashboardPage() {
+    const router = useRouter();
     const {
         address: patientAddress,
-        authError,
-        connectWallet,
-        hasMetaMask,
-        installUrl,
         isAuthenticated,
-        isConnecting
+        isReady
     } = useAuth();
     const [records, setRecords] = useState([]);
     const [consentLogs, setConsentLogs] = useState([]);
+    const [accessRequests, setAccessRequests] = useState([]);
     const [accessAnalytics, setAccessAnalytics] = useState([]);
     const [loading, setLoading] = useState(true);
     const [dashboardError, setDashboardError] = useState("");
+    const [showAllLogs, setShowAllLogs] = useState(false);
+    const [deletingRecordId, setDeletingRecordId] = useState(null);
+    const [actingRequestKey, setActingRequestKey] = useState("");
+    const [accessKeyState, setAccessKeyState] = useState({
+        doctorAddress: "",
+        accessKey: ""
+    });
+
+    useEffect(() => {
+        if (isReady && !isAuthenticated) {
+            router.replace("/auth");
+        }
+    }, [isAuthenticated, isReady, router]);
 
     useEffect(() => {
         if (!patientAddress) {
             setRecords([]);
             setConsentLogs([]);
+            setAccessRequests([]);
             setAccessAnalytics([]);
             setLoading(false);
             setDashboardError("");
@@ -139,13 +197,18 @@ export default function PatientDashboardPage() {
 
         async function loadDashboard() {
             try {
-                const [recordsRes, logsRes, analyticsRes] = await Promise.all([
+                const [recordsRes, logsRes, requestsRes, analyticsRes] = await Promise.all([
                     fetch(`${API_BASE}/records/patient/${patientAddress}`, {
                         headers: {
                             "x-wallet-address": patientAddress
                         }
                     }),
                     fetch(`${API_BASE}/patients/${patientAddress}/logs`, {
+                        headers: {
+                            "x-wallet-address": patientAddress
+                        }
+                    }),
+                    fetch(`${API_BASE}/patients/${patientAddress}/access-requests`, {
                         headers: {
                             "x-wallet-address": patientAddress
                         }
@@ -161,6 +224,7 @@ export default function PatientDashboardPage() {
 
                 const recordsPayload = await recordsRes.json();
                 const logsPayload = await logsRes.json();
+                const requestsPayload = await requestsRes.json();
                 const analyticsPayload = await analyticsRes.json();
 
                 if (!recordsRes.ok) {
@@ -171,18 +235,28 @@ export default function PatientDashboardPage() {
                     throw new Error(logsPayload.message || "Unable to load consent logs");
                 }
 
+                if (!requestsRes.ok) {
+                    throw new Error(requestsPayload.message || "Unable to load access requests");
+                }
+
                 if (!analyticsRes.ok) {
                     throw new Error(analyticsPayload.message || "Unable to load access analytics");
                 }
 
                 setRecords(Array.isArray(recordsPayload?.data) ? recordsPayload.data : []);
                 setConsentLogs(Array.isArray(logsPayload?.data) ? logsPayload.data : []);
+                setAccessRequests(Array.isArray(requestsPayload?.data) ? requestsPayload.data : []);
                 setAccessAnalytics(Array.isArray(analyticsPayload?.data) ? analyticsPayload.data : []);
             } catch (error) {
                 console.error("Unable to load patient dashboard", error);
                 if (active) {
+                    if (shouldRedirectToAuth(error.message)) {
+                        router.replace("/auth");
+                        return;
+                    }
                     setRecords([]);
                     setConsentLogs([]);
+                    setAccessRequests([]);
                     setAccessAnalytics([]);
                     setDashboardError(error.message || "Unable to load dashboard data");
                 }
@@ -195,7 +269,143 @@ export default function PatientDashboardPage() {
         return () => {
             active = false;
         };
-    }, [patientAddress]);
+    }, [patientAddress, router]);
+
+    async function handleGrantAccessRequest(request) {
+        if (!patientAddress) {
+            return;
+        }
+
+        const requestKey = `${request.requestId || "req"}-${request.doctorAddress}`;
+        setDashboardError("");
+        setActingRequestKey(requestKey);
+
+        try {
+            const response = await fetch(`${API_BASE}/patients/grant-access`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
+                },
+                body: JSON.stringify({
+                    patientAddress,
+                    doctorAddress: request.doctorAddress,
+                    duration: 86400,
+                    reason: request.reason || "Patient approved doctor request"
+                })
+            });
+
+            const payload = await response.json();
+
+            if (!response.ok) {
+                throw new Error(payload.message || "Unable to grant doctor access");
+            }
+
+            setAccessRequests((current) =>
+                current.map((item) =>
+                    item.doctorAddress === request.doctorAddress && item.status === "pending"
+                        ? {
+                              ...item,
+                              status: "approved",
+                              respondedAt: new Date().toISOString()
+                          }
+                        : item
+                )
+            );
+
+            setAccessKeyState({
+                doctorAddress: request.doctorAddress,
+                accessKey: payload?.data?.accessKey || ""
+            });
+        } catch (error) {
+            setDashboardError(error.message || "Unable to grant doctor access");
+        } finally {
+            setActingRequestKey("");
+        }
+    }
+
+    async function handleRejectAccessRequest(request) {
+        if (!patientAddress) {
+            return;
+        }
+
+        const requestKey = `${request.requestId || "req"}-${request.doctorAddress}`;
+        setDashboardError("");
+        setActingRequestKey(requestKey);
+
+        try {
+            const response = await fetch(`${API_BASE}/patients/reject-access`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
+                },
+                body: JSON.stringify({
+                    patientAddress,
+                    doctorAddress: request.doctorAddress,
+                    reason: "Patient rejected this access request"
+                })
+            });
+
+            const payload = await response.json();
+
+            if (!response.ok) {
+                throw new Error(payload.message || "Unable to reject access request");
+            }
+
+            setAccessRequests((current) =>
+                current.map((item) =>
+                    item.doctorAddress === request.doctorAddress && item.status === "pending"
+                        ? {
+                              ...item,
+                              status: "rejected",
+                              respondedAt: payload?.data?.respondedAt || new Date().toISOString()
+                          }
+                        : item
+                )
+            );
+        } catch (error) {
+            setDashboardError(error.message || "Unable to reject access request");
+        } finally {
+            setActingRequestKey("");
+        }
+    }
+
+    async function handleDeleteRecord(recordId) {
+        if (!patientAddress) {
+            return;
+        }
+
+        const shouldDelete = window.confirm("Delete this uploaded report from your dashboard?");
+
+        if (!shouldDelete) {
+            return;
+        }
+
+        setDashboardError("");
+        setDeletingRecordId(recordId);
+
+        try {
+            const response = await fetch(`${API_BASE}/records/${recordId}`, {
+                method: "DELETE",
+                headers: {
+                    "x-wallet-address": patientAddress
+                }
+            });
+
+            const payload = await response.json();
+
+            if (!response.ok) {
+                throw new Error(payload.message || "Unable to delete medical record");
+            }
+
+            setRecords((current) => current.filter((record) => record.recordId !== recordId));
+        } catch (error) {
+            setDashboardError(error.message || "Unable to delete medical record");
+        } finally {
+            setDeletingRecordId(null);
+        }
+    }
 
     const metrics = useMemo(() => {
         const totalRiskFlags = records.reduce(
@@ -227,55 +437,63 @@ export default function PatientDashboardPage() {
                     }))
                 )
                 .sort((a, b) => {
-                    if (a.date === "Unknown") return 1;
-                    if (b.date === "Unknown") return -1;
+                    if (!a.date) return 1;
+                    if (!b.date) return -1;
                     return new Date(a.date) - new Date(b.date);
                 }),
         [records]
     );
 
-    async function handleConnectWallet() {
-        try {
-            await connectWallet();
-        } catch (error) {
-            console.error("Unable to connect MetaMask", error);
+    const pendingAccessRequests = useMemo(
+        () => accessRequests.filter((request) => String(request.status || "pending").toLowerCase() === "pending"),
+        [accessRequests]
+    );
+
+    const approvedDoctors = useMemo(() => {
+        const approvedMap = new Map();
+
+        for (const request of accessRequests) {
+            if (String(request.status || "").toLowerCase() !== "approved") {
+                continue;
+            }
+
+            approvedMap.set(request.doctorAddress, {
+                doctorAddress: request.doctorAddress,
+                approvedAt: request.respondedAt || request.createdAt,
+                reason: request.reason || "Patient approved access request"
+            });
         }
-    }
+
+        for (const log of consentLogs) {
+            if (String(log.action || "").toUpperCase() !== "ACCESS_GRANTED" || !log.doctorAddress) {
+                continue;
+            }
+
+            if (!approvedMap.has(log.doctorAddress)) {
+                approvedMap.set(log.doctorAddress, {
+                    doctorAddress: log.doctorAddress,
+                    approvedAt: log.timestamp,
+                    reason: log.details?.reason || "Doctor access granted"
+                });
+            }
+        }
+
+        return Array.from(approvedMap.values()).sort((a, b) => new Date(b.approvedAt) - new Date(a.approvedAt));
+    }, [accessRequests, consentLogs]);
+
+    const sortedConsentLogs = useMemo(
+        () => [...consentLogs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)),
+        [consentLogs]
+    );
+
+    const displayedConsentLogs = useMemo(
+        () => (showAllLogs ? sortedConsentLogs : sortedConsentLogs.slice(0, 5)),
+        [showAllLogs, sortedConsentLogs]
+    );
 
     return (
         <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.16),_transparent_30%),linear-gradient(180deg,_#f8fffe_0%,_#eef6ff_54%,_#fffaf1_100%)] px-4 py-8 text-slate-900 sm:px-6 lg:px-10">
             <div className="mx-auto max-w-7xl">
-                {!isAuthenticated ? (
-                    <div className="mb-8 rounded-[2rem] border border-teal-200 bg-white/90 p-6 shadow-lg shadow-slate-200/50">
-                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-teal-700">Wallet Authentication</p>
-                        <h2 className="mt-3 text-3xl font-semibold text-slate-900">Connect MetaMask to open your patient dashboard.</h2>
-                        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-                            Your authenticated wallet address is used as the patient identity for records, consent logs, and access history.
-                        </p>
-                        <div className="mt-5 flex flex-wrap gap-3">
-                            <button
-                                type="button"
-                                onClick={handleConnectWallet}
-                                disabled={!hasMetaMask || isConnecting}
-                                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                {isConnecting ? "Connecting..." : "Connect MetaMask"}
-                            </button>
-                            {!hasMetaMask ? (
-                                <a
-                                    href={installUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="rounded-full border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                                >
-                                    Install MetaMask
-                                </a>
-                            ) : null}
-                        </div>
-                        {authError ? <p className="mt-4 text-sm text-rose-600">{authError}</p> : null}
-                    </div>
-                ) : null}
-
                 {dashboardError ? (
                     <div className="mb-8 rounded-[2rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
                         {dashboardError}
@@ -329,6 +547,86 @@ export default function PatientDashboardPage() {
                     <StatCard label="Doctors Accessing Records" value={metrics.doctorAccessors} hint="Doctors who have opened your medical records." />
                 </div>
 
+                <SectionShell title="Doctor Access Requests" eyebrow="Patient Consent Queue">
+                    {accessKeyState.accessKey ? (
+                        <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
+                            <p className="text-sm font-semibold">Share this key with the doctor</p>
+                            <p className="mt-2 text-xs text-emerald-700">Doctor: {accessKeyState.doctorAddress}</p>
+                            <p className="mt-3 rounded-xl border border-emerald-300 bg-white px-3 py-2 font-mono text-base tracking-[0.08em]">
+                                {accessKeyState.accessKey}
+                            </p>
+                        </div>
+                    ) : null}
+
+                    <div className="grid gap-4">
+                        {pendingAccessRequests.length ? (
+                            pendingAccessRequests.map((request) => {
+                                const requestKey = `${request.requestId || "req"}-${request.doctorAddress}`;
+                                const isActing = actingRequestKey === requestKey;
+
+                                return (
+                                    <article key={requestKey} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5">
+                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                            <p className="text-sm font-semibold text-slate-900">Doctor: {request.doctorAddress}</p>
+                                            <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${requestStatusClasses(request.status)}`}>
+                                                {request.status || "pending"}
+                                            </span>
+                                        </div>
+                                        <p className="mt-2 text-sm text-slate-600">Requested: {formatDate(request.createdAt)}</p>
+                                        <p className="mt-1 text-sm text-slate-600">Reason: {request.reason || "No reason provided"}</p>
+
+                                        <div className="mt-4 flex flex-wrap gap-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleGrantAccessRequest(request)}
+                                                disabled={isActing}
+                                                className="rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                {isActing ? "Processing..." : "Grant Access"}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleRejectAccessRequest(request)}
+                                                disabled={isActing}
+                                                className="rounded-full border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                                Reject
+                                            </button>
+                                        </div>
+                                    </article>
+                                );
+                            })
+                        ) : (
+                            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                                No pending doctor access requests.
+                            </div>
+                        )}
+                    </div>
+                </SectionShell>
+
+                <SectionShell title="Approved Doctors" eyebrow="Consent Status">
+                    <div className="grid gap-4">
+                        {approvedDoctors.length ? (
+                            approvedDoctors.map((doctor) => (
+                                <article key={`${doctor.doctorAddress}-${doctor.approvedAt}`} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <p className="text-sm font-semibold text-slate-900">Doctor: {doctor.doctorAddress}</p>
+                                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                                            Approved
+                                        </span>
+                                    </div>
+                                    <p className="mt-2 text-sm text-slate-600">Approved: {formatDate(doctor.approvedAt)}</p>
+                                    <p className="mt-1 text-sm text-slate-600">Reason: {doctor.reason}</p>
+                                </article>
+                            ))
+                        ) : (
+                            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                                No approved doctors yet.
+                            </div>
+                        )}
+                    </div>
+                </SectionShell>
+
                 <div className="mt-8 grid gap-8 xl:grid-cols-[1.2fr_0.8fr]">
                     <SectionShell
                         title="Medical Records"
@@ -346,12 +644,20 @@ export default function PatientDashboardPage() {
                                                     <span className="rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">
                                                         {record.recordType}
                                                     </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDeleteRecord(record.recordId)}
+                                                        disabled={deletingRecordId === record.recordId}
+                                                        className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                                    >
+                                                        {deletingRecordId === record.recordId ? "Deleting..." : "Delete"}
+                                                    </button>
                                                 </div>
                                                 <p className="mt-2 text-sm text-slate-500">
                                                     Uploaded {formatDate(record.uploadedAt || record.createdAt)} • IPFS {record.ipfsHash}
                                                 </p>
                                                 <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700">
-                                                    {record.aiSummary?.medicalSummary || "AI summary will appear here after processing."}
+                                                    {record.aiSummary?.clinicalSummary || "No significant health threats or abnormalities detected in the report."}
                                                 </p>
                                             </div>
                                             <div className="min-w-56 rounded-2xl bg-slate-950 p-4 text-white">
@@ -377,7 +683,7 @@ export default function PatientDashboardPage() {
                                 ))
                             ) : (
                                 <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                                    Upload a medical report to start building your encrypted record library and clinical timeline.
+                                    No medical records uploaded yet.
                                 </div>
                             )}
                         </div>
@@ -385,7 +691,7 @@ export default function PatientDashboardPage() {
 
                     <SectionShell title="Consent Ledger" eyebrow="Immutable Audit Trail">
                         <div className="space-y-4">
-                            {consentLogs.map((log) => (
+                            {displayedConsentLogs.map((log) => (
                                 <div key={log.id || `${log.action}-${log.timestamp}`} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                                     <div className="flex flex-wrap items-center justify-between gap-3">
                                         <span className={`rounded-full px-3 py-1 text-xs font-semibold ${actionClasses(log.action)}`}>
@@ -399,6 +705,16 @@ export default function PatientDashboardPage() {
                                     <p className="mt-1 text-sm leading-6 text-slate-600">{formatLogDetails(log.details)}</p>
                                 </div>
                             ))}
+
+                            {sortedConsentLogs.length > 5 ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAllLogs((current) => !current)}
+                                    className="mt-4 text-sm font-medium text-sky-700 transition hover:underline"
+                                >
+                                    {showAllLogs ? "Show Less" : "View All Logs"}
+                                </button>
+                            ) : null}
                         </div>
                     </SectionShell>
                 </div>
@@ -410,18 +726,58 @@ export default function PatientDashboardPage() {
 
                     <SectionShell title="AI Medical Summaries" eyebrow="Clinical Insights">
                         <div className="space-y-4">
-                            {records.map((record) => (
-                                <div key={`summary-${record.recordId}`} className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                                    <div className="flex items-start justify-between gap-4">
-                                        <div>
-                                            <h3 className="text-lg font-semibold text-slate-900">{record.title}</h3>
-                                            <p className="mt-1 text-sm text-slate-500">{record.recordType}</p>
+                            {records.length ? (
+                                records.map((record) => (
+                                    <div key={`summary-${record.recordId}`} className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-slate-900">{record.title}</h3>
+                                                <p className="mt-1 text-sm text-slate-500">{record.recordType}</p>
+                                            </div>
+                                            <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-700">AI Ready</span>
                                         </div>
-                                        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-700">AI Ready</span>
+
+                                        <div className="mt-4">
+                                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Conditions Detected</p>
+                                            <div className="mt-2 flex flex-wrap gap-2">
+                                                {(record.aiSummary?.conditionsDetected || record.aiSummary?.conditions || []).length ? (
+                                                    (record.aiSummary?.conditionsDetected || record.aiSummary?.conditions || []).map((condition) => (
+                                                        <span key={`${record.recordId}-${condition}`} className="rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-700">
+                                                            {condition}
+                                                        </span>
+                                                    ))
+                                                ) : (
+                                                    <span className="text-sm text-slate-500">No major abnormalities detected in the report.</span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-4">
+                                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Clinical Summary</p>
+                                            <p className="mt-2 text-sm leading-6 text-slate-700">
+                                                {record.aiSummary?.clinicalSummary || "No major abnormalities detected in the report."}
+                                            </p>
+                                        </div>
+
+                                        <div className="mt-4">
+                                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Significant Abnormalities</p>
+                                            <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                                                {(record.aiSummary?.significantAbnormalities || record.aiSummary?.abnormalFindings || []).length ? (
+                                                    (record.aiSummary?.significantAbnormalities || record.aiSummary?.abnormalFindings || []).map((finding) => (
+                                                        <li key={`${record.recordId}-${finding}`}>- {finding}</li>
+                                                    ))
+                                                ) : (
+                                                    <li>No major abnormalities detected in the report.</li>
+                                                )}
+                                            </ul>
+                                        </div>
                                     </div>
-                                    <p className="mt-4 text-sm leading-6 text-slate-700">{record.aiSummary?.medicalSummary}</p>
+                                ))
+                            ) : (
+                                <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                                    No medical records uploaded yet.
                                 </div>
-                            ))}
+                            )}
                         </div>
                     </SectionShell>
 
@@ -435,26 +791,15 @@ export default function PatientDashboardPage() {
                                             <div className="absolute left-[-24px] top-6 h-4 w-4 rounded-full border-4 border-white bg-teal-400 shadow" />
                                             <div className="flex flex-wrap items-center justify-between gap-3">
                                                 <p className="text-sm font-semibold uppercase tracking-[0.2em] text-teal-700">
-                                                    {event.date === "Unknown" ? "Date Unknown" : formatDate(event.date)}
+                                                    {event.date ? formatDate(event.date) : "Date Unknown"}
                                                 </p>
-                                                <div className="flex flex-wrap gap-2">
-                                                    {event.type ? (
-                                                        <span className="rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-700">
-                                                            {event.type}
-                                                        </span>
-                                                    ) : null}
-                                                    <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">{event.source}</span>
-                                                </div>
                                             </div>
                                             <p className="mt-3 text-sm leading-6 text-slate-700">{formatTimelineFinding(event)}</p>
-                                            {event.sourceText ? (
-                                                <p className="mt-2 text-xs leading-5 text-slate-500">{event.sourceText}</p>
-                                            ) : null}
                                         </div>
                                     ))
                                 ) : (
                                     <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-                                        Structured diagnoses, medications, and test findings will appear here after reports are uploaded and processed.
+                                        No medical timeline available yet.
                                     </div>
                                 )}
                             </div>

@@ -1,59 +1,48 @@
-import Link from "next/link";
+import Navbar from "../components/Navbar";
 
-const featureCards = [
+const platformPillars = [
     {
-        title: "Patient Dashboard",
+        title: "What Patient-Owned Health Data is",
         description:
-            "Upload encrypted medical records, manage doctor permissions, review consent logs, and track AI-generated medical insights.",
-        actions: [
-            { label: "Upload Medical Record", href: "/upload" },
-            { label: "Grant Access", href: "/grant-access" }
-        ]
+            "A patient-controlled health records platform where encrypted medical files stay off-chain while consent, access rights, and audit events are tracked transparently."
     },
     {
-        title: "Doctor Dashboard",
+        title: "Why medical data ownership matters",
         description:
-            "Request patient access, review granted records, read AI summaries, and trigger the emergency access workflow when needed.",
-        actions: [
-            { label: "View Records", href: "/view-records" },
-            { label: "Emergency Access", href: "/emergency" }
-        ]
+            "Patients should decide who can access their reports, for how long, and under what conditions. That model reduces opaque data sharing and gives people direct control over sensitive health history."
+    },
+    {
+        title: "How blockchain and IPFS are used",
+        description:
+            "Medical files are encrypted and stored in IPFS. Polygon smart contracts record hashes, permissions, consent changes, and access logs so the system stays auditable without exposing the underlying records on-chain."
     }
+];
+
+const howItWorks = [
+    "A patient connects a wallet and registers as a patient account.",
+    "The medical report is encrypted, stored in IPFS, and referenced on-chain by hash.",
+    "Doctors request access, and patients grant or revoke time-limited permissions.",
+    "Every consent and access action is logged, while AI services generate summaries and structured timelines from report content."
 ];
 
 export default function HomePage() {
     return (
-        <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.14),_transparent_28%),linear-gradient(180deg,_#f8fffe_0%,_#eef6ff_48%,_#fff9f0_100%)] px-4 py-8 text-slate-900 sm:px-6 lg:px-10">
-            <div className="mx-auto max-w-7xl">
-                <section className="overflow-hidden rounded-[2.25rem] bg-slate-950 text-white shadow-2xl shadow-slate-300/40">
-                    <div className="grid gap-8 px-6 py-10 md:grid-cols-[1.2fr_0.8fr] md:px-10 lg:px-12">
+        <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.14),_transparent_26%),linear-gradient(180deg,_#f8fffe_0%,_#eef6ff_45%,_#fff9f0_100%)] text-slate-900">
+            <Navbar />
+
+            <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-10">
+                <section className="overflow-hidden rounded-[2.5rem] bg-slate-950 text-white shadow-2xl shadow-slate-300/40">
+                    <div className="grid gap-10 px-6 py-12 md:grid-cols-[1.15fr_0.85fr] md:px-10 lg:px-12">
                         <div>
                             <p className="text-sm font-semibold uppercase tracking-[0.35em] text-teal-300">
                                 Patient-Owned Health Data
                             </p>
                             <h1 className="mt-4 max-w-3xl text-4xl font-semibold leading-tight md:text-5xl">
-                                Secure medical records with patient control, doctor access windows,
-                                and AI-assisted clinical summaries.
+                                A patient-first infrastructure for secure records, consent control, and accountable clinical access.
                             </h1>
                             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300">
-                                This platform keeps medical files off-chain, encrypts reports before
-                                storage, records consent actions immutably, and gives both patients
-                                and doctors dedicated workflows.
+                                The platform combines wallet identity, encrypted storage, blockchain-based permissions, and AI-assisted report understanding so health data can move without losing patient control.
                             </p>
-                            <div className="mt-8 flex flex-wrap gap-3">
-                                <Link
-                                    href="/patient"
-                                    className="rounded-full bg-teal-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-teal-300"
-                                >
-                                    Open Patient Dashboard
-                                </Link>
-                                <Link
-                                    href="/doctor"
-                                    className="rounded-full border border-white/20 px-5 py-3 text-sm font-semibold text-white transition hover:border-white/40 hover:bg-white/5"
-                                >
-                                    Open Doctor Dashboard
-                                </Link>
-                            </div>
                         </div>
 
                         <div className="grid gap-4">
@@ -62,7 +51,7 @@ export default function HomePage() {
                                     Core Stack
                                 </p>
                                 <div className="mt-4 flex flex-wrap gap-2">
-                                    {["Next.js", "Node.js", "Polygon", "IPFS", "MongoDB", "AI Service"].map(
+                                    {["Next.js", "Node.js", "MongoDB", "Polygon", "IPFS", "AI Service"].map(
                                         (item) => (
                                             <span
                                                 key={item}
@@ -74,44 +63,74 @@ export default function HomePage() {
                                     )}
                                 </div>
                             </div>
+
                             <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
                                 <p className="text-xs uppercase tracking-[0.28em] text-slate-400">
-                                    Key Rule
+                                    Architectural Rule
                                 </p>
                                 <p className="mt-3 text-sm leading-6 text-slate-200">
-                                    Medical files are not stored on-chain. Only hashes, permissions,
-                                    and consent activity are recorded on Polygon.
+                                    Medical files are never stored on-chain. Only hashes, permissions,
+                                    and access events are written to Polygon.
                                 </p>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <section className="mt-8 grid gap-6 lg:grid-cols-2">
-                    {featureCards.map((card) => (
+                <section className="mt-10 grid gap-6 lg:grid-cols-3">
+                    {platformPillars.map((pillar) => (
                         <article
-                            key={card.title}
+                            key={pillar.title}
                             className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-xl shadow-slate-200/60"
                         >
                             <p className="text-sm font-semibold uppercase tracking-[0.3em] text-teal-700">
-                                {card.title}
+                                Platform
                             </p>
+                            <h2 className="mt-4 text-2xl font-semibold text-slate-900">
+                                {pillar.title}
+                            </h2>
                             <p className="mt-4 text-sm leading-7 text-slate-600">
-                                {card.description}
+                                {pillar.description}
                             </p>
-                            <div className="mt-6 flex flex-wrap gap-3">
-                                {card.actions.map((action) => (
-                                    <Link
-                                        key={action.label}
-                                        href={action.href}
-                                        className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-                                    >
-                                        {action.label}
-                                    </Link>
-                                ))}
-                            </div>
                         </article>
                     ))}
+                </section>
+
+                <section className="mt-10 grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+                    <article className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-xl shadow-slate-200/60">
+                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">
+                            Why it matters
+                        </p>
+                        <h2 className="mt-4 text-3xl font-semibold text-slate-900">
+                            Health records should move with the patient, not around the patient.
+                        </h2>
+                        <p className="mt-4 text-sm leading-7 text-slate-600">
+                            Traditional record exchange often leaves patients outside the consent path.
+                            This platform changes that by making the wallet the identity anchor and
+                            the permission model explicit, time-bound, and auditable.
+                        </p>
+                    </article>
+
+                    <article className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-xl shadow-slate-200/60">
+                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">
+                            How it works
+                        </p>
+                        <div className="mt-5 space-y-4">
+                            {howItWorks.map((step, index) => (
+                                <div
+                                    key={step}
+                                    className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4"
+                                >
+                                    <div className="flex items-start gap-4">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+                                            {index + 1}
+                                        </div>
+                                        <p className="pt-1 text-sm leading-7 text-slate-700">{step}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </article>
                 </section>
             </div>
         </main>

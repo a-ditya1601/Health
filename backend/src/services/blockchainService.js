@@ -13,6 +13,7 @@ const Doctor = require("../../models/Doctor");
 const EmergencyAccess = require("../../models/EmergencyAccess");
 const MedicalRecord = require("../../models/MedicalRecord");
 const Patient = require("../../models/Patient");
+const encryptionService = require("./encryptionService");
 
 const CONTRACT_ABI = [
     "function patients(address) view returns (bool isRegistered, string metadataURI, uint256 registeredAt)",
@@ -722,7 +723,7 @@ async function getPatientRecords(patientAddress) {
         .lean();
 
     if (records.length) {
-        return records.map(mapMedicalRecord);
+        return records.filter((record) => !record.isDeleted).map(mapMedicalRecord);
     }
 
     const contract = getContract();
@@ -737,6 +738,9 @@ async function getPatientRecords(patientAddress) {
         const recordId = Number(rawId);
         const existingRecord = await MedicalRecord.findOne({ recordId }).lean();
         if (existingRecord) {
+            if (existingRecord.isDeleted) {
+                continue;
+            }
             syncedRecords.push(existingRecord);
             continue;
         }
@@ -815,7 +819,8 @@ async function getDoctorAccessibleRecords(doctorAddress) {
 
     const patientAddresses = Array.from(accessLookup.keys());
     const records = await MedicalRecord.find({
-        patientAddress: { $in: patientAddresses }
+        patientAddress: { $in: patientAddresses },
+        isDeleted: { $ne: true }
     })
         .sort({ createdAt: -1 })
         .lean();
@@ -832,6 +837,9 @@ async function getRecordById(recordId) {
     const existingRecord = await MedicalRecord.findOne({ recordId: numericId }).lean();
 
     if (existingRecord) {
+        if (existingRecord.isDeleted) {
+            throw new Error("Record not found");
+        }
         return mapMedicalRecord(existingRecord);
     }
 
@@ -858,6 +866,48 @@ async function getRecordById(recordId) {
     });
 
     return mapMedicalRecord(syncedRecord);
+}
+
+async function deleteMedicalRecord({ patientAddress, recordId }) {
+    const normalizedPatient = await ensurePatientExists(patientAddress);
+    const numericId = Number(recordId);
+
+    if (!Number.isFinite(numericId) || numericId <= 0) {
+        throw new Error("A valid record ID is required");
+    }
+
+    const record = await MedicalRecord.findOne({ recordId: numericId });
+
+    if (!record || record.isDeleted) {
+        throw new Error("Record not found");
+    }
+
+    if (record.patientAddress !== normalizedPatient) {
+        const error = new Error("You are not authorized to delete this record");
+        error.statusCode = 403;
+        throw error;
+    }
+
+    record.isDeleted = true;
+    record.deletedAt = new Date();
+    await record.save();
+
+    await createConsentLog({
+        patientAddress: normalizedPatient,
+        recordId: numericId,
+        action: "RECORD_DELETED",
+        details: {
+            ipfsHash: record.ipfsHash,
+            recordType: record.recordType,
+            fileName: record.fileName || null
+        }
+    });
+
+    return {
+        recordId: numericId,
+        patientAddress: normalizedPatient,
+        deletedAt: record.deletedAt.toISOString()
+    };
 }
 
 async function getConsentLogs({ patientAddress, doctorAddress, recordId }) {
@@ -891,6 +941,47 @@ async function getAccessRequests(patientAddress) {
     return requests.map(mapAccessRequest);
 }
 
+async function unlockPatientRecordsWithAccessKey({ doctorAddress, patientAddress, accessKey }) {
+    const normalizedDoctor = await ensureDoctorExists(doctorAddress);
+    const normalizedPatient = await ensurePatientExists(patientAddress);
+
+    if (!accessKey || !String(accessKey).trim()) {
+        throw new Error("An access key is required");
+    }
+
+    const records = await getPatientRecords(normalizedPatient);
+
+    if (!records.length) {
+        throw new Error("No records found for this patient");
+    }
+
+    const hasValidKey = records.some((record) =>
+        encryptionService.matchesAccessKey(accessKey, record.encryptedKeyHash)
+    );
+
+    if (!hasValidKey) {
+        const error = new Error("Invalid access key");
+        error.statusCode = 403;
+        throw error;
+    }
+
+    await createConsentLog({
+        patientAddress: normalizedPatient,
+        doctorAddress: normalizedDoctor,
+        action: "ACCESS_KEY_UNLOCKED",
+        details: {
+            unlockMethod: "access-key",
+            recordsUnlocked: records.length
+        }
+    });
+
+    return records.map((record) => ({
+        ...record,
+        accessMode: "access-key",
+        expiresAt: null
+    }));
+}
+
 module.exports = {
     registerPatient,
     registerDoctor,
@@ -903,7 +994,9 @@ module.exports = {
     hasActiveAccess,
     getPatientRecords,
     getDoctorAccessibleRecords,
+    unlockPatientRecordsWithAccessKey,
     getRecordById,
+    deleteMedicalRecord,
     getConsentLogs,
     getAccessRequests
 };

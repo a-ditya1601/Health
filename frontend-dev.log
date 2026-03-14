@@ -1,0 +1,51 @@
+
+> patient-owned-health-data-frontend@1.0.0 dev
+> next dev
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3001
+  - Experiments (use with caution):
+    · cpus
+
+ ✓ Starting...
+ ✓ Ready in 1229ms
+ ○ Compiling /auth ...
+ ✓ Compiled /auth in 4.5s (512 modules)
+ GET /auth 200 in 4748ms
+ ✓ Compiled in 638ms (238 modules)
+ ✓ Compiled in 181ms (238 modules)
+ ✓ Compiled in 135ms (224 modules)
+ ✓ Compiled in 406ms (238 modules)
+ ✓ Compiled in 526ms (238 modules)
+ ✓ Compiled in 272ms (238 modules)
+ ✓ Compiled in 116ms (238 modules)
+ ✓ Compiled in 413ms (238 modules)
+ ✓ Compiled in 666ms (224 modules)
+ ✓ Compiled in 476ms (224 modules)
+ ✓ Compiled in 429ms (238 modules)
+ ✓ Compiled in 199ms (238 modules)
+ ✓ Compiled in 229ms (238 modules)
+ ✓ Compiled in 197ms (238 modules)
+ ✓ Compiled in 282ms (238 modules)
+ ✓ Compiled in 267ms (238 modules)
+ ✓ Compiled in 206ms (238 modules)
+ ✓ Compiled in 174ms (238 modules)
+ ✓ Compiled in 473ms (238 modules)
+ ✓ Compiled in 219ms (238 modules)
+ ✓ Compiled in 177ms (238 modules)
+ ✓ Compiled in 477ms (238 modules)
+ ✓ Compiled in 282ms (238 modules)
+ ✓ Compiled in 558ms (238 modules)
+ ✓ Compiled in 270ms (238 modules)
+ ✓ Compiled in 173ms (238 modules)
+ ✓ Compiled in 182ms (238 modules)
+ ✓ Compiled in 120ms (238 modules)
+ ✓ Compiled in 195ms (238 modules)
+ ✓ Compiled in 196ms (238 modules)
+ ✓ Compiled in 515ms (238 modules)
+ ✓ Compiled in 188ms (238 modules)
+ ✓ Compiled in 2.7s (238 modules)
+ ✓ Compiled in 352ms (238 modules)
+ ✓ Compiled in 375ms (238 modules)
+ ✓ Compiled in 134ms (238 modules)
+ ✓ Compiled in 124ms (238 modules)

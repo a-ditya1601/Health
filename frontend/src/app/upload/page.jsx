@@ -6,6 +6,16 @@ import { useAuth } from "../../context/AuthContext";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000/api";
 
+function toUploadErrorMessage(message) {
+    const normalized = String(message || "").toLowerCase();
+
+    if (normalized.includes("patient is not registered")) {
+        return "Upload failed. Please register your wallet first.";
+    }
+
+    return message || "Upload failed.";
+}
+
 function StepPill({ label, active }) {
     return (
         <div className={`rounded-full px-4 py-2 text-sm font-semibold ${active ? "bg-teal-500 text-white" : "bg-white text-slate-500"}`}>
@@ -81,32 +91,8 @@ export default function PatientUploadPage() {
 
             setUploadResult(payload.data);
         } catch (submitError) {
-            setUploadResult({
-                record: {
-                    recordId: Date.now(),
-                    recordType,
-                    fileName: file.name,
-                    ipfsHash: "mock-bafy-upload-preview-001",
-                    txHash: "0xmockhashuploaded",
-                    createdAt: new Date().toISOString()
-                },
-                storage: {
-                    provider: "mock-ipfs",
-                    gatewayUrl: "https://gateway.pinata.cloud/ipfs/mock-bafy-upload-preview-001"
-                },
-                encryption: {
-                    algorithm: "aes-256-gcm",
-                    keyHash: "mock-key-hash-preview"
-                },
-                aiSummary: {
-                    medicalSummary:
-                        "Preview summary: uploaded file will be encrypted, pinned to IPFS, and summarized for conditions and risk flags.",
-                    riskFlags: [{ label: "Pending AI review", severity: "medium" }],
-                    conditionsDetected: ["Awaiting extraction"],
-                    timeline: [{ date: new Date().toISOString(), event: "Upload queued for timeline extraction." }]
-                }
-            });
-            setError(`${submitError.message} Showing a local preview response instead.`);
+            setUploadResult(null);
+            setError(toUploadErrorMessage(submitError.message));
         } finally {
             setIsSubmitting(false);
         }

@@ -67,7 +67,53 @@ function decryptFile(payload, accessKeyEnvelope) {
     return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
 }
 
+function computeAccessKeyHash(accessKey) {
+    if (!accessKey || typeof accessKey !== "string") {
+        return "";
+    }
+
+    const normalized = accessKey.trim();
+    if (!normalized) {
+        return "";
+    }
+
+    try {
+        const parsed = JSON.parse(normalized);
+        const key = parsed?.key ? Buffer.from(parsed.key, "base64") : null;
+        const iv = parsed?.iv ? Buffer.from(parsed.iv, "base64") : null;
+        const authTag = parsed?.authTag ? Buffer.from(parsed.authTag, "base64") : null;
+
+        if (key && iv && authTag) {
+            return sha256(Buffer.concat([key, iv, authTag]));
+        }
+    } catch (error) {
+        // Intentionally ignored: non-JSON access keys are handled below.
+    }
+
+    return sha256(normalized);
+}
+
+function matchesAccessKey(accessKey, encryptedKeyHash) {
+    if (!encryptedKeyHash || typeof encryptedKeyHash !== "string") {
+        return false;
+    }
+
+    const normalizedHash = encryptedKeyHash.trim().toLowerCase();
+    const normalizedKey = String(accessKey || "").trim().toLowerCase();
+
+    if (!normalizedKey) {
+        return false;
+    }
+
+    if (normalizedKey === normalizedHash) {
+        return true;
+    }
+
+    return computeAccessKeyHash(accessKey) === normalizedHash;
+}
+
 module.exports = {
     encryptFile,
-    decryptFile
+    decryptFile,
+    matchesAccessKey
 };

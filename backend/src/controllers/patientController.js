@@ -1,8 +1,11 @@
+const crypto = require("crypto");
 const blockchainService = require("../services/blockchainService");
 const AccessLog = require("../../models/AccessLog");
 const Doctor = require("../../models/Doctor");
+const MedicalRecord = require("../../models/MedicalRecord");
 const {
     ensureWalletMatch,
+    normalizeWalletAddress,
     requireAuthenticatedWallet
 } = require("../middleware/authMiddleware");
 
@@ -33,6 +36,28 @@ function resolveDoctorName(doctor) {
     }
 }
 
+function generateAccessKey() {
+    const first = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const second = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const third = Math.random().toString(36).slice(2, 6).toUpperCase();
+    return `${first}-${second}-${third}`;
+}
+
+function computeAccessKeyHash(accessKey) {
+    return crypto.createHash("sha256").update(String(accessKey).trim()).digest("hex");
+}
+
+function resolveDurationInSeconds(durationInSeconds, duration) {
+    const candidate = Number(durationInSeconds ?? duration ?? 86400);
+    if (!Number.isFinite(candidate) || candidate <= 0) {
+        const error = new Error("A positive access duration is required");
+        error.statusCode = 400;
+        throw error;
+    }
+
+    return candidate;
+}
+
 async function registerPatient(req, res) {
     try {
         const { patientAddress, walletAddress, metadataURI } = req.body;
@@ -53,18 +78,66 @@ async function registerPatient(req, res) {
 
 async function grantDoctorAccess(req, res) {
     try {
-        const { patientAddress, doctorAddress, durationInSeconds, reason } = req.body;
+        const authenticatedWallet = requireAuthenticatedWallet(req);
+        const { patientAddress, doctorAddress, durationInSeconds, duration, reason } = req.body;
+        const resolvedPatientAddress = patientAddress || authenticatedWallet;
+
+        ensureWalletMatch(
+            resolvedPatientAddress,
+            authenticatedWallet,
+            "Patients can only grant access for their own wallet"
+        );
+
+        const resolvedDuration = resolveDurationInSeconds(durationInSeconds, duration);
         const permission = await blockchainService.grantDoctorAccess({
-            patientAddress,
+            patientAddress: resolvedPatientAddress,
             doctorAddress,
-            durationInSeconds,
+            durationInSeconds: resolvedDuration,
             reason
         });
+
+        const accessKey = generateAccessKey();
+        const accessKeyHash = computeAccessKeyHash(accessKey);
+        const normalizedPatient = normalizeWalletAddress(resolvedPatientAddress);
+        const normalizedDoctor = normalizeWalletAddress(doctorAddress);
+
+        await MedicalRecord.updateMany(
+            {
+                patientAddress: normalizedPatient,
+                isDeleted: { $ne: true }
+            },
+            {
+                $set: {
+                    encryptedKeyHash: accessKeyHash
+                }
+            }
+        );
+
+        await AccessLog.findOneAndUpdate(
+            {
+                patientAddress: normalizedPatient,
+                doctorAddress: normalizedDoctor,
+                action: "ACCESS_GRANTED"
+            },
+            {
+                $set: {
+                    "details.accessKeyHash": accessKeyHash,
+                    "details.unlockMethod": "patient-shared-key"
+                }
+            },
+            {
+                sort: { timestamp: -1 }
+            }
+        );
 
         return res.status(200).json({
             success: true,
             message: "Doctor access granted",
-            data: permission
+            data: {
+                ...permission,
+                accessKey,
+                accessKeyHash
+            }
         });
     } catch (error) {
         return handleError(res, error);
@@ -73,9 +146,18 @@ async function grantDoctorAccess(req, res) {
 
 async function revokeDoctorAccess(req, res) {
     try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
         const { patientAddress, doctorAddress } = req.body;
+        const resolvedPatientAddress = patientAddress || authenticatedWallet;
+
+        ensureWalletMatch(
+            resolvedPatientAddress,
+            authenticatedWallet,
+            "Patients can only revoke access for their own wallet"
+        );
+
         const result = await blockchainService.revokeDoctorAccess({
-            patientAddress,
+            patientAddress: resolvedPatientAddress,
             doctorAddress
         });
 
@@ -83,6 +165,65 @@ async function revokeDoctorAccess(req, res) {
             success: true,
             message: "Doctor access revoked",
             data: result
+        });
+    } catch (error) {
+        return handleError(res, error);
+    }
+}
+
+async function rejectAccessRequest(req, res) {
+    try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
+        const { patientAddress, doctorAddress, reason } = req.body;
+        const resolvedPatientAddress = patientAddress || authenticatedWallet;
+
+        ensureWalletMatch(
+            resolvedPatientAddress,
+            authenticatedWallet,
+            "Patients can only reject requests for their own wallet"
+        );
+
+        const normalizedPatient = normalizeWalletAddress(resolvedPatientAddress);
+        const normalizedDoctor = normalizeWalletAddress(doctorAddress);
+
+        if (!normalizedDoctor) {
+            const error = new Error("Doctor wallet address is required");
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const request = await AccessLog.findOne({
+            patientAddress: normalizedPatient,
+            doctorAddress: normalizedDoctor,
+            action: "ACCESS_REQUESTED",
+            status: "pending"
+        }).sort({ timestamp: -1 });
+
+        if (!request) {
+            const error = new Error("Pending access request not found");
+            error.statusCode = 404;
+            throw error;
+        }
+
+        request.status = "rejected";
+        request.respondedAt = new Date();
+        request.details = {
+            ...(request.details || {}),
+            rejectionReason: reason || "Rejected by patient"
+        };
+        await request.save();
+
+        return res.status(200).json({
+            success: true,
+            message: "Access request rejected",
+            data: {
+                requestId: request.requestId,
+                patientAddress: request.patientAddress,
+                doctorAddress: request.doctorAddress,
+                status: request.status,
+                respondedAt: request.respondedAt?.toISOString() || null,
+                reason: request.details?.rejectionReason || "Rejected by patient"
+            }
         });
     } catch (error) {
         return handleError(res, error);
@@ -208,6 +349,7 @@ module.exports = {
     registerPatient,
     grantDoctorAccess,
     revokeDoctorAccess,
+    rejectAccessRequest,
     grantEmergencyAccess,
     getConsentLogs,
     getPatientRecords,

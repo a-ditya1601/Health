@@ -1,6 +1,37 @@
 const AI_SERVICE_URL =
     process.env.AI_SERVICE_URL || "http://localhost:8000/api/summarize";
 
+function sortTimelineEvents(events = []) {
+    const filtered = (Array.isArray(events) ? events : [])
+        .map((event) => ({
+            date: event?.date || "Unknown",
+            type: event?.type || "Clinical Note",
+            finding: String(event?.finding || "").trim(),
+            risk: String(event?.risk || "").trim(),
+            sourceText: String(event?.sourceText || "").trim()
+        }))
+        .filter((event) => event.finding.length >= 6);
+
+    return filtered.sort((a, b) => {
+        const aKnown = a.date && a.date !== "Unknown";
+        const bKnown = b.date && b.date !== "Unknown";
+
+        if (aKnown && bKnown) {
+            return new Date(a.date) - new Date(b.date);
+        }
+
+        if (aKnown && !bKnown) {
+            return -1;
+        }
+
+        if (!aKnown && bKnown) {
+            return 1;
+        }
+
+        return a.finding.localeCompare(b.finding);
+    });
+}
+
 function fallbackSummary(text) {
     const normalized = String(text || "").replace(/\s+/g, " ").trim();
     const sentences = normalized
@@ -22,6 +53,14 @@ async function generateSummary({ text, fileName, recordType }) {
             medications: [],
             timelineEvents: [],
             timeline: [],
+            patientHistoryEntry: {
+                date: "Unknown",
+                reportType: recordType || "Medical Report",
+                keyFindings: "",
+                diagnosis: "",
+                riskFlags: [],
+                recommendedFollowUp: ""
+            },
             rawText: ""
         };
     }
@@ -45,14 +84,24 @@ async function generateSummary({ text, fileName, recordType }) {
 
         const payload = await response.json();
         const result = payload.data || payload;
+        const timelineEvents = sortTimelineEvents(result.medicalEvents || []);
+        const patientHistoryEntry = result.patientHistoryEntry || {
+            date: result.date || "Unknown",
+            reportType: result.reportType || recordType || "Medical Report",
+            keyFindings: result.keyFindings || "",
+            diagnosis: result.diagnosis || "",
+            riskFlags: (result.riskFlags || []).map((flag) => flag.label),
+            recommendedFollowUp: result.recommendedFollowUp || ""
+        };
 
         return {
             medicalSummary: result.summary || fallbackSummary(normalizedText),
             riskFlags: result.riskFlags || [],
             conditionsDetected: result.conditions || [],
             medications: result.medications || [],
-            timelineEvents: result.medicalEvents || [],
-            timeline: result.medicalEvents || [],
+            timelineEvents,
+            timeline: timelineEvents,
+            patientHistoryEntry,
             rawText: result.rawText || normalizedText
         };
     } catch (error) {
@@ -67,6 +116,14 @@ async function generateSummary({ text, fileName, recordType }) {
             medications: [],
             timelineEvents: [],
             timeline: [],
+            patientHistoryEntry: {
+                date: "Unknown",
+                reportType: recordType || "Medical Report",
+                keyFindings: "",
+                diagnosis: "",
+                riskFlags: [],
+                recommendedFollowUp: ""
+            },
             rawText: normalizedText
         };
     }

@@ -2,70 +2,43 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { useAuth } from "../../context/AuthContext";
 import { shortenAddress } from "../../services/blockchain";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5000/api";
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+});
 
-const mockGrantedRecords = [
-    {
-        recordId: 31,
-        patientAddress: "0xPatient001...7f3c",
-        patientName: "Anita Rao",
-        title: "Cardiology Follow-up Report",
-        recordType: "Consultation",
-        accessMode: "standard",
-        expiresAt: "2026-03-12T11:45:00.000Z",
-        aiSummary: {
-            medicalSummary: "Stable vitals with ongoing cardiac medication management and no new ischemic symptoms.",
-            riskFlags: [{ label: "Cardiac instability", severity: "high" }]
-        }
-    },
-    {
-        recordId: 32,
-        patientAddress: "0xPatient002...8c1d",
-        patientName: "Rahul Sen",
-        title: "Diabetes Lab Review",
-        recordType: "Lab",
-        accessMode: "emergency",
-        expiresAt: "2026-03-11T20:00:00.000Z",
-        aiSummary: {
-            medicalSummary: "Insulin-managed diabetes with elevated glucose trend and recommendation for urgent follow-up.",
-            riskFlags: [{ label: "Diabetes risk", severity: "high" }]
-        }
-    }
-];
-
-const mockLogs = [
-    {
-        id: 1,
-        action: "ACCESS_REQUESTED",
-        patientAddress: "0xPatient004...19ae",
-        timestamp: "2026-03-10T08:20:00.000Z",
-        details: "Requested dermatology imaging review"
-    },
-    {
-        id: 2,
-        action: "EMERGENCY_ACCESS_REQUESTED",
-        patientAddress: "0xPatient002...8c1d",
-        timestamp: "2026-03-11T07:45:00.000Z",
-        details: "Emergency request submitted for dizziness and hypotension"
-    }
-];
-
-function formatDate(value) {
-    return new Date(value).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-        hour: "numeric",
-        minute: "2-digit"
-    });
+function shouldRedirectToAuth(message) {
+    const normalized = String(message || "").toLowerCase();
+    return (
+        normalized.includes("doctor is not registered") ||
+        normalized.includes("authentication required") ||
+        normalized.includes("wallet address is required") ||
+        normalized.includes("not authorized")
+    );
 }
 
-function statusBadge(mode) {
-    return mode === "emergency" ? "bg-rose-100 text-rose-700" : "bg-sky-100 text-sky-700";
+function formatDate(value) {
+    if (!value) {
+        return "No date available";
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return "Date unavailable";
+    }
+
+    return dateFormatter.format(date);
 }
 
 function metricCard(label, value, note) {
@@ -78,57 +51,96 @@ function metricCard(label, value, note) {
     );
 }
 
+function normalizeAddress(address) {
+    return String(address || "").trim().toLowerCase();
+}
+
+function accessStatusBadge(status) {
+    if (status === "granted") {
+        return "bg-emerald-100 text-emerald-700";
+    }
+
+    if (status === "pending") {
+        return "bg-amber-100 text-amber-700";
+    }
+
+    return "bg-slate-100 text-slate-600";
+}
+
 export default function DoctorDashboardPage() {
-    const [patientAddress, setPatientAddress] = useState("");
-    const [reason, setReason] = useState("Specialist review of recently uploaded records");
+    const router = useRouter();
+    const [records, setRecords] = useState([]);
+    const [logs, setLogs] = useState([]);
+    const [dashboardError, setDashboardError] = useState("");
+    const [newPatientAddress, setNewPatientAddress] = useState("");
     const [requestState, setRequestState] = useState("");
     const [requestError, setRequestError] = useState("");
     const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
-    const [records, setRecords] = useState(mockGrantedRecords);
-    const [logs, setLogs] = useState(mockLogs);
     const {
         address: doctorAddress,
-        authError,
-        connectWallet,
-        hasMetaMask,
-        installUrl,
         isAuthenticated,
-        isConnecting
+        isReady
     } = useAuth();
+
+    useEffect(() => {
+        if (isReady && !isAuthenticated) {
+            router.replace("/auth");
+        }
+    }, [isAuthenticated, isReady, router]);
 
     useEffect(() => {
         if (!doctorAddress) {
             setRecords([]);
             setLogs([]);
+            setDashboardError("");
             return;
         }
 
         let active = true;
+        setDashboardError("");
 
         async function loadDoctorData() {
             try {
                 const [recordsRes, logsRes] = await Promise.all([
-                    fetch(`${API_BASE}/doctors/${doctorAddress}/records`),
-                    fetch(`${API_BASE}/doctors/${doctorAddress}/logs`)
+                    fetch(`${API_BASE}/doctors/${doctorAddress}/records`, {
+                        headers: {
+                            "x-wallet-address": doctorAddress
+                        }
+                    }),
+                    fetch(`${API_BASE}/doctors/${doctorAddress}/logs`, {
+                        headers: {
+                            "x-wallet-address": doctorAddress
+                        }
+                    })
                 ]);
 
                 if (!active) return;
 
-                if (recordsRes.ok) {
-                    const payload = await recordsRes.json();
-                    if (payload?.data?.length) {
-                        setRecords(payload.data);
-                    }
+                const recordsPayload = await recordsRes.json();
+                const logsPayload = await logsRes.json();
+
+                if (!recordsRes.ok) {
+                    throw new Error(recordsPayload.message || "Unable to load patient directory");
                 }
 
-                if (logsRes.ok) {
-                    const payload = await logsRes.json();
-                    if (payload?.data?.length) {
-                        setLogs(payload.data);
-                    }
+                if (!logsRes.ok) {
+                    throw new Error(logsPayload.message || "Unable to load doctor activity");
                 }
+
+                setRecords(Array.isArray(recordsPayload?.data) ? recordsPayload.data : []);
+                setLogs(Array.isArray(logsPayload?.data) ? logsPayload.data : []);
             } catch (error) {
-                console.error("Using doctor dashboard fallback data", error);
+                console.error("Unable to load doctor dashboard", error);
+                if (active) {
+                    if (shouldRedirectToAuth(error.message)) {
+                        router.replace("/auth");
+                        return;
+                    }
+
+                    setRecords([]);
+                    setLogs([]);
+                    setDashboardError(error.message || "Unable to load patient directory");
+                }
             }
         }
 
@@ -136,31 +148,106 @@ export default function DoctorDashboardPage() {
         return () => {
             active = false;
         };
-    }, [doctorAddress]);
+    }, [doctorAddress, router]);
+
+    const patientDirectory = useMemo(() => {
+        const patientMap = new Map();
+
+        for (const record of records) {
+            const patientWallet = normalizeAddress(record.patientAddress);
+            if (!patientWallet) {
+                continue;
+            }
+
+            const existing = patientMap.get(patientWallet) || {
+                walletAddress: patientWallet,
+                patientName: record.patientName || `Patient ${shortenAddress(patientWallet)}`,
+                accessibleRecords: 0,
+                lastActivity: null
+            };
+
+            existing.accessibleRecords += 1;
+            existing.patientName = record.patientName || existing.patientName;
+
+            if (record.createdAt) {
+                existing.lastActivity = existing.lastActivity
+                    ? new Date(existing.lastActivity) > new Date(record.createdAt)
+                        ? existing.lastActivity
+                        : record.createdAt
+                    : record.createdAt;
+            }
+
+            patientMap.set(patientWallet, existing);
+        }
+
+        return Array.from(patientMap.values()).sort((a, b) => {
+            if (!a.lastActivity) return 1;
+            if (!b.lastActivity) return -1;
+            return new Date(b.lastActivity) - new Date(a.lastActivity);
+        });
+    }, [records]);
 
     const metrics = useMemo(() => {
         const emergencyCount = records.filter((record) => record.accessMode === "emergency").length;
-        const totalFlags = records.reduce(
-            (count, record) => count + (record.aiSummary?.riskFlags?.length || 0),
-            0
-        );
 
         return {
-            grantedRecords: records.length,
-            emergencyCount,
-            totalFlags
+            patients: patientDirectory.length,
+            accessibleRecords: records.length,
+            emergencyCount
         };
-    }, [records]);
+    }, [patientDirectory.length, records]);
 
-    async function handleConnectWallet() {
-        try {
-            await connectWallet();
-        } catch (error) {
-            console.error("Unable to connect MetaMask", error);
+    const patientAccessRows = useMemo(() => {
+        const rowMap = new Map();
+
+        for (const record of records) {
+            const patientAddress = normalizeAddress(record.patientAddress);
+            if (!patientAddress) {
+                continue;
+            }
+
+            const existing = rowMap.get(patientAddress) || {
+                patientAddress,
+                status: "no-access",
+                lastUpdatedAt: null
+            };
+
+            existing.status = "granted";
+            existing.lastUpdatedAt = record.createdAt || existing.lastUpdatedAt;
+            rowMap.set(patientAddress, existing);
         }
-    }
 
-    async function handleAccessRequest(event) {
+        for (const log of logs) {
+            const patientAddress = normalizeAddress(log.patientAddress);
+
+            if (!patientAddress || String(log.action || "").toUpperCase() !== "ACCESS_REQUESTED") {
+                continue;
+            }
+
+            const existing = rowMap.get(patientAddress) || {
+                patientAddress,
+                status: "no-access",
+                lastUpdatedAt: null
+            };
+
+            const requestStatus = String(log.status || "pending").toLowerCase();
+
+            if (existing.status !== "granted") {
+                existing.status = requestStatus === "approved" ? "granted" : requestStatus === "pending" ? "pending" : "no-access";
+            }
+
+            existing.lastUpdatedAt = log.timestamp || existing.lastUpdatedAt;
+            rowMap.set(patientAddress, existing);
+        }
+
+        return Array.from(rowMap.values()).sort((a, b) => {
+            if (!a.lastUpdatedAt) return 1;
+            if (!b.lastUpdatedAt) return -1;
+            return new Date(b.lastUpdatedAt) - new Date(a.lastUpdatedAt);
+        });
+    }, [logs, records]);
+
+    async function handleRequestAccess(event) {
         event.preventDefault();
         setRequestState("");
         setRequestError("");
@@ -170,13 +257,12 @@ export default function DoctorDashboardPage() {
             return;
         }
 
-        setIsSubmittingRequest(true);
+        if (!newPatientAddress.trim()) {
+            setRequestError("Enter Patient Wallet Address.");
+            return;
+        }
 
-        const payload = {
-            patientAddress,
-            doctorAddress,
-            reason
-        };
+        setIsSubmittingRequest(true);
 
         try {
             const response = await fetch(`${API_BASE}/doctors/access/request`, {
@@ -185,31 +271,32 @@ export default function DoctorDashboardPage() {
                     "Content-Type": "application/json",
                     "x-wallet-address": doctorAddress
                 },
-                body: JSON.stringify(payload)
+                body: JSON.stringify({
+                    doctorAddress,
+                    patientAddress: newPatientAddress.trim()
+                })
             });
+
             const result = await response.json().catch(() => null);
 
             if (!response.ok) {
-                throw new Error(result?.message || "Unable to submit access request.");
+                throw new Error(result?.message || "Unable to send access request.");
             }
 
-            const request = result?.data || {};
+            setRequestState("Access request sent to patient.");
+            setNewPatientAddress("");
             setLogs((current) => [
                 {
-                    id: request.requestId || Date.now(),
+                    id: Date.now(),
                     action: "ACCESS_REQUESTED",
-                    patientAddress: request.patientAddress || patientAddress,
-                    timestamp: request.createdAt || new Date().toISOString(),
-                    details: request.reason || reason
+                    patientAddress: normalizeAddress(newPatientAddress),
+                    timestamp: new Date().toISOString(),
+                    details: "Access requested from doctor dashboard"
                 },
                 ...current
             ]);
-            setRequestState(result?.message || "Access request submitted to the patient consent ledger.");
-            setPatientAddress("");
-            setReason("Specialist review of recently uploaded records");
         } catch (error) {
-            console.error("Doctor access request failed", error);
-            setRequestError(error.message || "Unable to submit access request.");
+            setRequestError(error.message || "Unable to send access request.");
         } finally {
             setIsSubmittingRequest(false);
         }
@@ -218,34 +305,9 @@ export default function DoctorDashboardPage() {
     return (
         <div className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(14,165,233,0.14),_transparent_24%),linear-gradient(180deg,_#f8fbff_0%,_#eff8ff_48%,_#fef8ef_100%)] px-4 py-8 sm:px-6 lg:px-10">
             <div className="mx-auto max-w-7xl">
-                {!isAuthenticated ? (
-                    <div className="mb-8 rounded-[2rem] border border-sky-200 bg-white/90 p-6 shadow-lg shadow-slate-200/50">
-                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">Wallet Authentication</p>
-                        <h2 className="mt-3 text-3xl font-semibold text-slate-900">Connect MetaMask to enter the doctor workspace.</h2>
-                        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-                            The connected wallet is used as the doctor identity when loading granted records and submitting access requests.
-                        </p>
-                        <div className="mt-5 flex flex-wrap gap-3">
-                            <button
-                                type="button"
-                                onClick={handleConnectWallet}
-                                disabled={!hasMetaMask || isConnecting}
-                                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                                {isConnecting ? "Connecting..." : "Connect MetaMask"}
-                            </button>
-                            {!hasMetaMask ? (
-                                <a
-                                    href={installUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="rounded-full border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                                >
-                                    Install MetaMask
-                                </a>
-                            ) : null}
-                        </div>
-                        {authError ? <p className="mt-4 text-sm text-rose-600">{authError}</p> : null}
+                {dashboardError ? (
+                    <div className="mb-8 rounded-[2rem] border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                        {dashboardError}
                     </div>
                 ) : null}
 
@@ -254,49 +316,23 @@ export default function DoctorDashboardPage() {
                         <div>
                             <p className="text-sm uppercase tracking-[0.35em] text-sky-300">Doctor Workspace</p>
                             <h1 className="mt-4 text-4xl font-semibold leading-tight md:text-5xl">
-                                Request access, review granted records, and act fast in emergencies.
+                                Patient Directory
                             </h1>
                             <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-300">
-                                This dashboard gives doctors a consent-aware view of patient data, AI summaries, and emergency access flows without storing protected files on-chain.
+                                Start with the patient list, then open an individual patient page to handle access and view records.
                             </p>
-                            <div className="mt-6 flex flex-wrap gap-3">
-                                <Link href="/view-records" className="rounded-full bg-sky-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-sky-300">
-                                    View Patient Record
-                                </Link>
-                                <Link href="/emergency" className="rounded-full border border-white/20 px-5 py-3 text-sm font-semibold text-white transition hover:border-white/40 hover:bg-white/5">
-                                    Emergency Request
-                                </Link>
-                            </div>
                         </div>
                         <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-5">
                             <p className="text-sm text-slate-300">Doctor wallet</p>
                             <div className="mt-3 rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white">
                                 {doctorAddress || "Connect MetaMask to authenticate"}
                             </div>
-                            <div className="mt-3 flex flex-wrap gap-3">
-                                <button
-                                    type="button"
-                                    onClick={handleConnectWallet}
-                                    disabled={!hasMetaMask || isConnecting}
-                                    className="rounded-full bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    {doctorAddress ? "Reconnect Wallet" : isConnecting ? "Connecting..." : "Connect MetaMask"}
-                                </button>
-                                {!hasMetaMask ? (
-                                    <a
-                                        href={installUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/5"
-                                    >
-                                        Install MetaMask
-                                    </a>
-                                ) : null}
-                            </div>
                             <div className="mt-5 rounded-[1.5rem] bg-white/5 p-4">
-                                <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Current access state</p>
-                                <p className="mt-2 text-2xl font-semibold">{metrics.grantedRecords} granted records</p>
-                                <p className="mt-1 text-sm text-slate-300">{metrics.emergencyCount} emergency windows and {metrics.totalFlags} active AI flags</p>
+                                <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Directory scope</p>
+                                <p className="mt-2 text-2xl font-semibold">{metrics.patients} patients</p>
+                                <p className="mt-1 text-sm text-slate-300">
+                                    {metrics.accessibleRecords} accessible records and {metrics.emergencyCount} emergency windows.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -308,132 +344,102 @@ export default function DoctorDashboardPage() {
                         doctorAddress ? shortenAddress(doctorAddress) : "Not connected",
                         "MetaMask account used as the doctor identity."
                     )}
-                    {metricCard("Emergency Windows", metrics.emergencyCount, "Temporary emergency sessions with time-limited access.")}
-                    {metricCard("AI Risk Flags", metrics.totalFlags, "Clinical warnings surfaced from report summaries.")}
+                    {metricCard("Patients", metrics.patients, "Patients visible from current access grants or prior activity.")}
+                    {metricCard("Accessible Records", metrics.accessibleRecords, "Records currently returned by the backend for this doctor.")}
                 </div>
 
-                <div className="mt-8 grid gap-8 xl:grid-cols-[0.88fr_1.12fr]">
-                    <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
-                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">Request Access</p>
-                        <h2 className="mt-2 text-2xl font-semibold text-slate-900">Ask for patient consent</h2>
-                        <form onSubmit={handleAccessRequest} className="mt-6 space-y-4">
-                            <input
-                                value={patientAddress}
-                                onChange={(event) => setPatientAddress(event.target.value)}
-                                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-sky-400 focus:bg-white"
-                                placeholder="Patient wallet address"
-                                required
-                            />
-                            <textarea
-                                value={reason}
-                                onChange={(event) => setReason(event.target.value)}
-                                rows={5}
-                                className="w-full rounded-[1.5rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-sky-400 focus:bg-white"
-                                placeholder="Explain why access is needed"
-                            />
-                            <button
-                                type="submit"
-                                disabled={isSubmittingRequest}
-                                className="rounded-full bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                                {isSubmittingRequest ? "Submitting..." : "Submit Access Request"}
-                            </button>
-                            {requestState ? (
-                                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                                    {requestState}
-                                </div>
-                            ) : null}
-                            {requestError ? (
-                                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                                    {requestError}
-                                </div>
-                            ) : null}
-                        </form>
-                    </section>
-
-                    <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
-                        <div className="flex items-center justify-between gap-4">
-                            <div>
-                                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-teal-700">Granted Records</p>
-                                <h2 className="mt-2 text-2xl font-semibold text-slate-900">Patient files you can view</h2>
-                            </div>
-                            <Link href="/view-records" className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-                                Open Viewer
-                            </Link>
+                <section className="mt-8 rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
+                    <div className="flex items-center justify-between gap-4">
+                        <div>
+                            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">Patient Directory</p>
+                            <h2 className="mt-2 text-2xl font-semibold text-slate-900">Patients You Have Access To</h2>
                         </div>
+                    </div>
 
-                        <div className="mt-6 grid gap-4">
-                            {records.map((record) => (
-                                <article key={record.recordId} className="rounded-[1.5rem] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-5">
-                                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                                        <div>
-                                            <div className="flex flex-wrap items-center gap-3">
-                                                <h3 className="text-xl font-semibold text-slate-900">{record.title}</h3>
-                                                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusBadge(record.accessMode)}`}>
-                                                    {record.accessMode}
+                    <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200">
+                        <table className="min-w-full bg-white text-sm">
+                            <thead className="bg-slate-50 text-slate-600">
+                                <tr>
+                                    <th className="px-4 py-3 text-left font-semibold">Patient Address</th>
+                                    <th className="px-4 py-3 text-left font-semibold">Access Status</th>
+                                    <th className="px-4 py-3 text-left font-semibold">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {patientAccessRows.length ? (
+                                    patientAccessRows.map((row) => (
+                                        <tr key={row.patientAddress} className="border-t border-slate-100">
+                                            <td className="px-4 py-3 align-middle">
+                                                <p className="font-semibold text-slate-900">{shortenAddress(row.patientAddress)}</p>
+                                                <p className="mt-1 break-all text-xs text-slate-500">{row.patientAddress}</p>
+                                            </td>
+                                            <td className="px-4 py-3 align-middle">
+                                                <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${accessStatusBadge(row.status)}`}>
+                                                    {row.status === "granted" ? "Granted" : row.status === "pending" ? "Pending" : "No Access"}
                                                 </span>
-                                            </div>
-                                            <p className="mt-2 text-sm text-slate-500">
-                                                {record.patientName} • {record.patientAddress}
-                                            </p>
-                                            <p className="mt-3 text-sm leading-6 text-slate-700">
-                                                {record.aiSummary?.medicalSummary}
-                                            </p>
-                                        </div>
-                                        <div className="min-w-52 rounded-2xl bg-slate-950 p-4 text-white">
-                                            <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Access expires</p>
-                                            <p className="mt-2 text-sm">{formatDate(record.expiresAt)}</p>
-                                            <div className="mt-4 flex flex-wrap gap-2">
-                                                {(record.aiSummary?.riskFlags || []).map((flag) => (
-                                                    <span key={`${record.recordId}-${flag.label}`} className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold">
-                                                        {flag.label}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </article>
-                            ))}
-                        </div>
-                    </section>
-                </div>
+                                            </td>
+                                            <td className="px-4 py-3 align-middle">
+                                                {row.status === "granted" ? (
+                                                    <Link
+                                                        href={`/doctor/patient/${row.patientAddress}`}
+                                                        className="rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800"
+                                                    >
+                                                        View Records
+                                                    </Link>
+                                                ) : row.status === "pending" ? (
+                                                    <span className="text-xs font-medium text-amber-700">Awaiting Approval</span>
+                                                ) : (
+                                                    <span className="text-xs font-medium text-slate-500">No Action</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))
+                                ) : (
+                                    <tr>
+                                        <td colSpan={3} className="px-4 py-6 text-center text-slate-500">
+                                            No patient access data available.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
 
-                <div className="mt-8 grid gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-                    <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
-                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-700">AI Summaries</p>
-                        <div className="mt-5 space-y-4">
-                            {records.map((record) => (
-                                <div key={`summary-${record.recordId}`} className="rounded-[1.5rem] border border-slate-200 bg-white p-5">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <h3 className="text-lg font-semibold text-slate-900">{record.patientName}</h3>
-                                        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
-                                            {record.recordType}
-                                        </span>
-                                    </div>
-                                    <p className="mt-3 text-sm leading-6 text-slate-700">{record.aiSummary?.medicalSummary}</p>
-                                </div>
-                            ))}
-                        </div>
-                    </section>
+                <section className="mt-8 rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
+                    <p className="text-sm font-semibold uppercase tracking-[0.3em] text-teal-700">Access Requests</p>
+                    <h2 className="mt-2 text-2xl font-semibold text-slate-900">Request Access to a Patient</h2>
 
-                    <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
-                        <p className="text-sm font-semibold uppercase tracking-[0.3em] text-rose-700">Recent Activity</p>
-                        <div className="mt-5 space-y-4">
-                            {logs.map((log) => (
-                                <div key={log.id} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                                            {log.action.replaceAll("_", " ")}
-                                        </span>
-                                        <span className="text-sm text-slate-500">{formatDate(log.timestamp)}</span>
-                                    </div>
-                                    <p className="mt-3 text-sm font-medium text-slate-900">{log.patientAddress}</p>
-                                    <p className="mt-1 text-sm text-slate-600">{log.details}</p>
-                                </div>
-                            ))}
-                        </div>
-                    </section>
-                </div>
+                    <form onSubmit={handleRequestAccess} className="mt-6 max-w-2xl space-y-4">
+                        <input
+                            type="text"
+                            value={newPatientAddress}
+                            onChange={(event) => setNewPatientAddress(event.target.value)}
+                            placeholder="Enter Patient Wallet Address"
+                            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-teal-400 focus:bg-white"
+                        />
+
+                        <button
+                            type="submit"
+                            disabled={isSubmittingRequest}
+                            className="rounded-full bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            {isSubmittingRequest ? "Requesting..." : "Request Access"}
+                        </button>
+
+                        {requestState ? (
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                                {requestState}
+                            </div>
+                        ) : null}
+
+                        {requestError ? (
+                            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                                {requestError}
+                            </div>
+                        ) : null}
+                    </form>
+                </section>
             </div>
         </div>
     );

@@ -67,6 +67,10 @@ const medicalRecordSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.Mixed,
             default: null
         },
+        timelineEntry: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null
+        },
         timelineEvents: {
             type: [timelineEventSchema],
             default: []
@@ -77,6 +81,15 @@ const medicalRecordSchema = new mongoose.Schema(
         },
         txHash: {
             type: String,
+            default: null
+        },
+        isDeleted: {
+            type: Boolean,
+            default: false,
+            index: true
+        },
+        deletedAt: {
+            type: Date,
             default: null
         }
     },

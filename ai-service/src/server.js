@@ -27,14 +27,15 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/summarize", async (req, res) => {
     try {
-        const { text, pdfBase64, reportId, fileName } = req.body;
+        const { text, pdfBase64, reportId, fileName, reportType } = req.body;
         const pdfBuffer = pdfBase64 ? Buffer.from(pdfBase64, "base64") : null;
 
         const result = await summarizeMedicalReport({
             text,
             pdfBuffer,
             reportId,
-            fileName
+            fileName,
+            reportType
         });
 
         res.status(200).json({
