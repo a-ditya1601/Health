@@ -16,7 +16,7 @@ const Patient = require("../../models/Patient");
 const encryptionService = require("./encryptionService");
 
 const CONTRACT_ABI = [
-    "function patients(address) view returns (bool isRegistered, string metadataURI, uint256 registeredAt)",
+    "function patients(address) view returns (bool isRegistered, string metadataURI, uint256 registeredAt, address guardianWalletAddress)",
     "function doctors(address) view returns (bool isRegistered, string metadataURI, uint256 registeredAt)",
     "function registerPatientByRelayer(address patient, string metadataURI)",
     "function registerDoctorByRelayer(address doctor, string metadataURI)",
@@ -26,6 +26,8 @@ const CONTRACT_ABI = [
     "function revokeDoctorAccessByRelayer(address patient, address doctor)",
     "function requestEmergencyAccessByRelayer(address doctor, address patient, string reason)",
     "function grantEmergencyAccessByRelayer(address patient, address doctor, uint256 durationInSeconds, string reason)",
+    "function setGuardianByRelayer(address patient, address guardian)",
+    "function grantEmergencyAccessByGuardianRelayed(address guardian, address patient, address doctor, uint256 durationInSeconds, string reason)",
     "function hasDoctorAccess(address patient, address doctor) view returns (bool)",
     "function getPatientRecordIds(address patient) view returns (uint256[])",
     "function records(uint256) view returns (uint256 recordId, address patient, string ipfsHash, string encryptedKeyHash, string recordType, uint256 createdAt, bool exists)"
@@ -606,6 +608,25 @@ async function requestEmergencyAccess({ patientAddress, doctorAddress, reason })
     };
 }
 
+async function grantEmergencyAccessByGuardianRelayed(guardianAddress, patientAddress, doctorAddress, durationInSeconds, reason) {
+    const txHash = await sendContractTransaction("grantEmergencyAccessByGuardianRelayed", [
+        guardianAddress,
+        patientAddress,
+        doctorAddress,
+        Number(durationInSeconds),
+        reason || "Emergency access granted by guardian"
+    ]);
+    return txHash;
+}
+
+async function assignGuardianByRelayer(patientAddress, guardianAddress) {
+    const txHash = await sendContractTransaction("setGuardianByRelayer", [
+        patientAddress,
+        guardianAddress
+    ]);
+    return txHash;
+}
+
 async function grantEmergencyAccess({
     patientAddress,
     doctorAddress,
@@ -991,6 +1012,8 @@ module.exports = {
     revokeDoctorAccess,
     requestEmergencyAccess,
     grantEmergencyAccess,
+    grantEmergencyAccessByGuardianRelayed,
+    assignGuardianByRelayer,
     hasActiveAccess,
     getPatientRecords,
     getDoctorAccessibleRecords,

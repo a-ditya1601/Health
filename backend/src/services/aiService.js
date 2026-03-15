@@ -125,10 +125,12 @@ You are a medical data interpreter. Analyze the following medical report text an
 
 Return structured output containing:
 1. reportDate
-2. probableConditions
-3. keyAbnormalFindings
+2. conditionsDetected
+3. significantAbnormalities
 4. clinicalSummary
 5. finalConclusion
+6. healthRisks (analyzes the risks involved with the specific sickness/conditions)
+7. lifestyleRecommendations (actionable lifestyle changes the patient can do to improve their condition)
 
 Do NOT repeat raw lab tables or numeric ranges unless they indicate abnormalities.
 The clinicalSummary must explain the medical meaning of the report in simple medical language.
@@ -138,16 +140,18 @@ Focus on medical meaning rather than listing values.
 Return JSON with this exact shape:
 {
   "reportDate": "YYYY-MM-DD or Unknown",
-    "conditionsDetected": ["string"],
-    "significantAbnormalities": ["string"],
+  "conditionsDetected": ["string"],
+  "significantAbnormalities": ["string"],
   "clinicalSummary": "string",
   "finalConclusion": "string",
+  "healthRisks": ["string"],
+  "lifestyleRecommendations": ["string"],
   "reportType": "string",
   "riskFlags": [{"label":"string","severity":"low|medium|high|critical","reason":"string"}]
 }
 
 Report text:
-${normalizedText.slice(0, 14000)}
+${normalizedText.slice(0, 250000)}
 `.trim();
 
     const result = await callAiJson(prompt);
@@ -164,6 +168,14 @@ ${normalizedText.slice(0, 14000)}
             ? result.keyAbnormalFindings.map((item) => String(item || "").trim()).filter(Boolean)
         : [];
 
+    const healthRisks = Array.isArray(result.healthRisks)
+        ? result.healthRisks.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+
+    const lifestyleRecommendations = Array.isArray(result.lifestyleRecommendations)
+        ? result.lifestyleRecommendations.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+
     return {
         reportDate: String(result.reportDate || "Unknown").trim() || "Unknown",
         reportType: String(result.reportType || "Medical Report").trim(),
@@ -171,6 +183,8 @@ ${normalizedText.slice(0, 14000)}
         significantAbnormalities,
         conditions: conditionsDetected,
         abnormalFindings: significantAbnormalities,
+        healthRisks,
+        lifestyleRecommendations,
         clinicalSummary: normalizeClinicalSummary(result.clinicalSummary),
         finalConclusion: String(result.finalConclusion || "").trim() || DEFAULT_CLINICAL_SUMMARY,
         riskFlags: normalizeRiskFlags(result.riskFlags),
@@ -193,7 +207,7 @@ Return JSON with this exact shape:
 }
 
 Report text:
-${normalizedText.slice(0, 14000)}
+${normalizedText.slice(0, 250000)}
 `.trim();
 
     const result = await callAiJson(prompt);

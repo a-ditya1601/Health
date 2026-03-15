@@ -1,12 +1,14 @@
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 const accessLogSchema = new mongoose.Schema(
     {
         logId: {
-            type: Number,
+            type: String,
             required: true,
             unique: true,
-            index: true
+            index: true,
+            default: () => crypto.randomUUID()
         },
         requestId: {
             type: Number,

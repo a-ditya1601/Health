@@ -17,6 +17,7 @@ contract HealthRecord {
         bool isRegistered;
         string metadataURI;
         uint256 registeredAt;
+        address guardianWalletAddress;
     }
 
     struct Doctor {
@@ -121,6 +122,11 @@ contract HealthRecord {
     event EmergencyAccessExpired(
         address indexed patient,
         address indexed doctor,
+        uint256 timestamp
+    );
+    event GuardianSet(
+        address indexed patient,
+        address indexed guardian,
         uint256 timestamp
     );
 
@@ -275,6 +281,40 @@ contract HealthRecord {
         _grantEmergencyAccess(patient, doctor, durationInSeconds, reason);
     }
 
+    function setGuardian(address guardian) external onlyRegisteredPatient {
+        patients[msg.sender].guardianWalletAddress = guardian;
+        emit GuardianSet(msg.sender, guardian, block.timestamp);
+    }
+
+    function setGuardianByRelayer(address patient, address guardian) external onlyAuthorizedRelayer {
+        require(patients[patient].isRegistered, "Patient not registered");
+        patients[patient].guardianWalletAddress = guardian;
+        emit GuardianSet(patient, guardian, block.timestamp);
+    }
+
+    function grantEmergencyAccessByGuardian(
+        address patient,
+        address doctor,
+        uint256 durationInSeconds,
+        string calldata reason
+    ) external {
+        require(patients[patient].isRegistered, "Patient not registered");
+        require(patients[patient].guardianWalletAddress == msg.sender, "Unauthorized: Only guardian can grant emergency access");
+        _grantEmergencyAccess(patient, doctor, durationInSeconds, reason);
+    }
+
+    function grantEmergencyAccessByGuardianRelayed(
+        address guardian,
+        address patient,
+        address doctor,
+        uint256 durationInSeconds,
+        string calldata reason
+    ) external onlyAuthorizedRelayer {
+        require(patients[patient].isRegistered, "Patient not registered");
+        require(patients[patient].guardianWalletAddress == guardian, "Unauthorized: Only guardian can grant emergency access");
+        _grantEmergencyAccess(patient, doctor, durationInSeconds, reason);
+    }
+
     function markEmergencyAccessExpired(address patient) external onlyRegisteredDoctor {
         _markEmergencyAccessExpired(patient, msg.sender);
     }
@@ -358,7 +398,8 @@ contract HealthRecord {
         patients[patient] = Patient({
             isRegistered: true,
             metadataURI: metadataURI,
-            registeredAt: block.timestamp
+            registeredAt: block.timestamp,
+            guardianWalletAddress: address(0)
         });
 
         emit PatientRegistered(patient, metadataURI, block.timestamp);

@@ -105,6 +105,10 @@ export default function DoctorPatientPage() {
     const [isUnlocking, setIsUnlocking] = useState(false);
     const [accessState, setAccessState] = useState("pending");
 
+    const [isSubmittingEmergency, setIsSubmittingEmergency] = useState(false);
+    const [emergencyRequestState, setEmergencyRequestState] = useState("");
+    const [emergencyError, setEmergencyError] = useState("");
+
     useEffect(() => {
         if (isReady && !isAuthenticated) {
             router.replace("/auth");
@@ -264,6 +268,46 @@ export default function DoctorPatientPage() {
             setRequestError(error.message || "Unable to submit access request.");
         } finally {
             setIsSubmittingRequest(false);
+        }
+    }
+
+    async function handleEmergencyRequest(event) {
+        event.preventDefault();
+        setEmergencyRequestState("");
+        setEmergencyError("");
+
+        if (!doctorAddress) {
+            setEmergencyError("Connect MetaMask before requesting patient access.");
+            return;
+        }
+
+        setIsSubmittingEmergency(true);
+
+        try {
+            const response = await fetch(`${API_BASE}/emergency/request`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wallet-address": doctorAddress
+                },
+                body: JSON.stringify({
+                    patientAddress,
+                    doctorAddress,
+                    reason: "Life-threatening medical emergency"
+                })
+            });
+            const result = await response.json().catch(() => null);
+
+            if (!response.ok) {
+                throw new Error(result?.message || "Unable to initiate emergency access.");
+            }
+
+            setEmergencyRequestState("Emergency break-glass initiated. Awaiting Guardian approval.");
+        } catch (error) {
+            console.error("Emergency request failed", error);
+            setEmergencyError(error.message || "Unable to submit emergency request.");
+        } finally {
+            setIsSubmittingEmergency(false);
         }
     }
 
@@ -443,6 +487,33 @@ export default function DoctorPatientPage() {
                                     {requestError}
                                 </div>
                             ) : null}
+
+                            <div className="mt-8 border-t border-slate-200 pt-6">
+                                <p className="text-sm font-semibold uppercase tracking-[0.25em] text-rose-700">Break-Glass 🚨</p>
+                                <p className="mt-2 text-sm text-slate-600">
+                                    In life-threatening situations, initiate an emergency request to the patient's registered Guardian.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleEmergencyRequest}
+                                    disabled={isSubmittingEmergency}
+                                    className="mt-4 rounded-full border-2 border-rose-200 bg-rose-50 px-6 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {isSubmittingEmergency ? "Initiating..." : "Initiate Emergency Break-Glass"}
+                                </button>
+                                
+                                {emergencyRequestState ? (
+                                    <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                                        {emergencyRequestState}
+                                    </div>
+                                ) : null}
+
+                                {emergencyError ? (
+                                    <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                                        {emergencyError}
+                                    </div>
+                                ) : null}
+                            </div>
 
                             <p className="mt-6 text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">OR</p>
 

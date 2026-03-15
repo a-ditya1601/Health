@@ -44,6 +44,12 @@ const patientSchema = new mongoose.Schema(
             trim: true,
             index: true
         },
+        guardianWalletAddress: {
+            type: String,
+            lowercase: true,
+            trim: true,
+            default: null
+        },
         metadataURI: {
             type: String,
             default: ""

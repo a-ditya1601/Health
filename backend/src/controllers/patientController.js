@@ -250,6 +250,52 @@ async function grantEmergencyAccess(req, res) {
     }
 }
 
+async function assignGuardian(req, res) {
+    try {
+        const authenticatedWallet = requireAuthenticatedWallet(req);
+        const { patientAddress, guardianAddress } = req.body;
+        const resolvedPatientAddress = patientAddress || authenticatedWallet;
+
+        ensureWalletMatch(
+            resolvedPatientAddress,
+            authenticatedWallet,
+            "Only the patient can assign a guardian."
+        );
+
+        if (!guardianAddress) {
+            return res.status(400).json({ success: false, message: "A guardian wallet address is required." });
+        }
+
+        const normalizedPatient = normalizeWalletAddress(resolvedPatientAddress);
+        const normalizedGuardian = normalizeWalletAddress(guardianAddress);
+
+        const txHash = await blockchainService.assignGuardianByRelayer(normalizedPatient, normalizedGuardian);
+
+        const PatientModel = require("../../models/Patient");
+        await PatientModel.findOneAndUpdate(
+            { walletAddress: normalizedPatient },
+            { guardianWalletAddress: normalizedGuardian },
+            { new: true, upsert: true }
+        );
+
+        await AccessLog.create({
+            patientAddress: normalizedPatient,
+            doctorAddress: normalizedGuardian,
+            action: "GUARDIAN_ASSIGNED",
+            details: `Guardian ${normalizedGuardian} has been assigned`,
+            txHash
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Guardian successfully assigned.",
+            data: { guardianAddress: normalizedGuardian, txHash }
+        });
+    } catch (error) {
+        return handleError(res, error);
+    }
+}
+
 async function getConsentLogs(req, res) {
     try {
         const authenticatedWallet = requireAuthenticatedWallet(req);
@@ -354,5 +400,6 @@ module.exports = {
     getConsentLogs,
     getPatientRecords,
     getAccessRequests,
-    getAccessAnalytics
+    getAccessAnalytics,
+    assignGuardian
 };

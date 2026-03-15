@@ -163,6 +163,7 @@ export default function PatientDashboardPage() {
     const [records, setRecords] = useState([]);
     const [consentLogs, setConsentLogs] = useState([]);
     const [accessRequests, setAccessRequests] = useState([]);
+    const [emergencyRequests, setEmergencyRequests] = useState([]);
     const [accessAnalytics, setAccessAnalytics] = useState([]);
     const [loading, setLoading] = useState(true);
     const [dashboardError, setDashboardError] = useState("");
@@ -185,6 +186,7 @@ export default function PatientDashboardPage() {
             setRecords([]);
             setConsentLogs([]);
             setAccessRequests([]);
+            setEmergencyRequests([]);
             setAccessAnalytics([]);
             setLoading(false);
             setDashboardError("");
@@ -197,7 +199,7 @@ export default function PatientDashboardPage() {
 
         async function loadDashboard() {
             try {
-                const [recordsRes, logsRes, requestsRes, analyticsRes] = await Promise.all([
+                const [recordsRes, logsRes, requestsRes, analyticsRes, emergencyRes] = await Promise.all([
                     fetch(`${API_BASE}/records/patient/${patientAddress}`, {
                         headers: {
                             "x-wallet-address": patientAddress
@@ -217,6 +219,11 @@ export default function PatientDashboardPage() {
                         headers: {
                             "x-wallet-address": patientAddress
                         }
+                    }),
+                    fetch(`${API_BASE}/emergency/guardian/${patientAddress}/requests`, {
+                        headers: {
+                            "x-wallet-address": patientAddress
+                        }
                     })
                 ]);
 
@@ -226,6 +233,7 @@ export default function PatientDashboardPage() {
                 const logsPayload = await logsRes.json();
                 const requestsPayload = await requestsRes.json();
                 const analyticsPayload = await analyticsRes.json();
+                const emergencyPayload = await emergencyRes.json().catch(() => null);
 
                 if (!recordsRes.ok) {
                     throw new Error(recordsPayload.message || "Unable to load medical records");
@@ -247,6 +255,7 @@ export default function PatientDashboardPage() {
                 setConsentLogs(Array.isArray(logsPayload?.data) ? logsPayload.data : []);
                 setAccessRequests(Array.isArray(requestsPayload?.data) ? requestsPayload.data : []);
                 setAccessAnalytics(Array.isArray(analyticsPayload?.data) ? analyticsPayload.data : []);
+                setEmergencyRequests(emergencyRes?.ok && Array.isArray(emergencyPayload?.data) ? emergencyPayload.data : []);
             } catch (error) {
                 console.error("Unable to load patient dashboard", error);
                 if (active) {
@@ -257,6 +266,7 @@ export default function PatientDashboardPage() {
                     setRecords([]);
                     setConsentLogs([]);
                     setAccessRequests([]);
+                    setEmergencyRequests([]);
                     setAccessAnalytics([]);
                     setDashboardError(error.message || "Unable to load dashboard data");
                 }
@@ -404,6 +414,44 @@ export default function PatientDashboardPage() {
             setDashboardError(error.message || "Unable to delete medical record");
         } finally {
             setDeletingRecordId(null);
+        }
+    }
+
+    async function handleApproveEmergency(requestId) {
+        if (!patientAddress) return;
+
+        const isActing = actingRequestKey === `emrg-${requestId}`;
+        if (isActing) return;
+
+        setDashboardError("");
+        setActingRequestKey(`emrg-${requestId}`);
+
+        try {
+            const response = await fetch(`${API_BASE}/emergency/approve`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
+                },
+                body: JSON.stringify({ requestId })
+            });
+
+            const payload = await response.json();
+
+            if (!response.ok) {
+                throw new Error(payload.message || "Unable to approve emergency access");
+            }
+
+            setEmergencyRequests((current) => current.filter((req) => String(req._id) !== String(requestId)));
+            
+            // Optionally reload dashboard to refresh consent logs
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } catch (error) {
+            setDashboardError(error.message || "Failed to approve emergency request");
+        } finally {
+            setActingRequestKey("");
         }
     }
 
@@ -604,6 +652,49 @@ export default function PatientDashboardPage() {
                     </div>
                 </SectionShell>
 
+                <SectionShell title="Guardian Duties" eyebrow="Emergency Requests 🚨">
+                    {emergencyRequests.length > 0 ? (
+                        <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50 p-5">
+                            <p className="text-sm font-semibold text-rose-800 mb-4">
+                                You have been designated as a Guardian for the following patients. They have pending emergency break-glass requests.
+                            </p>
+                            <div className="grid gap-4">
+                                {emergencyRequests.map((request) => {
+                                    const reqKey = `emrg-${request._id}`;
+                                    const isActing = actingRequestKey === reqKey;
+
+                                    return (
+                                        <article key={request._id} className="rounded-2xl border border-rose-300 bg-white p-5 shadow-sm">
+                                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                                <p className="text-sm font-semibold text-slate-900">Patient: {request.patientAddress}</p>
+                                                <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700">
+                                                    Action Required
+                                                </span>
+                                            </div>
+                                            <p className="mt-2 text-sm text-slate-600">Doctor: {request.doctorAddress}</p>
+                                            <p className="mt-1 text-sm text-slate-600">Reason: {request.reason}</p>
+                                            <div className="mt-4">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleApproveEmergency(request._id)}
+                                                    disabled={isActing}
+                                                    className="rounded-full bg-rose-600 px-5 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                                >
+                                                    {isActing ? "Approving..." : "Approve Emergency Access"}
+                                                </button>
+                                            </div>
+                                        </article>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+                            No pending emergency break-glass requests require your approval.
+                        </div>
+                    )}
+                </SectionShell>
+
                 <SectionShell title="Approved Doctors" eyebrow="Consent Status">
                     <div className="grid gap-4">
                         {approvedDoctors.length ? (
@@ -770,6 +861,46 @@ export default function PatientDashboardPage() {
                                                     <li>No major abnormalities detected in the report.</li>
                                                 )}
                                             </ul>
+                                        </div>
+
+                                        <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50/50 p-4">
+                                            <h5 className="flex items-center gap-2 text-sm font-semibold text-rose-800">
+                                                <svg className="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                </svg>
+                                                Health Risks Detected
+                                            </h5>
+                                            {(record.aiSummary?.healthRisks || []).length > 0 ? (
+                                                <ul className="mt-3 list-outside list-disc space-y-2 pl-4 text-sm text-slate-700">
+                                                    {record.aiSummary.healthRisks.map((risk) => (
+                                                        <li key={`${record.recordId}-${risk}`} className="leading-relaxed pl-1">
+                                                            {risk}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            ) : (
+                                                <p className="mt-3 text-sm text-slate-700">No major health risks detected in this report.</p>
+                                            )}
+                                        </div>
+
+                                        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
+                                            <h5 className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                                                <svg className="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                                                </svg>
+                                                Lifestyle Recommendations
+                                            </h5>
+                                            {(record.aiSummary?.lifestyleRecommendations || []).length > 0 ? (
+                                                <ul className="mt-3 list-outside list-disc space-y-2 pl-4 text-sm text-slate-700">
+                                                    {record.aiSummary.lifestyleRecommendations.map((rec) => (
+                                                        <li key={`${record.recordId}-${rec}`} className="leading-relaxed pl-1">
+                                                            {rec}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            ) : (
+                                                <p className="mt-3 text-sm text-slate-700">No specific lifestyle changes recommended based on this report.</p>
+                                            )}
                                         </div>
                                     </div>
                                 ))

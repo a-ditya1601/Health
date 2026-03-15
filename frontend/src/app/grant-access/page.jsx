@@ -77,8 +77,35 @@ export default function PatientAccessControlPage() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [activeDoctorAddress, setActiveDoctorAddress] = useState("");
 
+    // Guardian Registration State
+    const [guardianAddress, setGuardianAddress] = useState("");
+    const [isSubmittingGuardian, setIsSubmittingGuardian] = useState(false);
+
     useEffect(() => {
         setPatientAddress(authenticatedPatientAddress || "");
+    }, [authenticatedPatientAddress]);
+
+    const [pendingRequests, setPendingRequests] = useState([]);
+
+    useEffect(() => {
+        let active = true;
+        if (!authenticatedPatientAddress) return;
+
+        async function fetchRequests() {
+            try {
+                const response = await fetch(`${API_BASE}/patients/${authenticatedPatientAddress}/access-requests`, {
+                    headers: { "x-wallet-address": authenticatedPatientAddress }
+                });
+                if (response.ok && active) {
+                    const data = await response.json();
+                    setPendingRequests((data.data || []).filter((r) => r.status === 'pending'));
+                }
+            } catch (error) {
+                console.error("Failed to fetch pending requests", error);
+            }
+        }
+        fetchRequests();
+        return () => { active = false; };
     }, [authenticatedPatientAddress]);
 
     const metrics = useMemo(() => {
@@ -202,6 +229,50 @@ export default function PatientAccessControlPage() {
         }
     }
 
+    async function handleAssignGuardian(event) {
+        event.preventDefault();
+        setNotice("");
+        setErrorMessage("");
+        setIsSubmittingGuardian(true);
+
+        try {
+            const response = await fetch(`${API_BASE}/patients/assign-guardian`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-wallet-address": patientAddress
+                },
+                body: JSON.stringify({
+                    patientAddress,
+                    guardianAddress
+                })
+            });
+            const result = await response.json().catch(() => null);
+
+            if (!response.ok) {
+                throw new Error(result?.message || "Unable to assign emergency guardian.");
+            }
+
+            setLogs((current) => [
+                {
+                    id: Date.now(),
+                    action: "GUARDIAN_ASSIGNED",
+                    doctorAddress: guardianAddress,
+                    details: `Guardian successfully assigned.`,
+                    timestamp: new Date().toISOString()
+                },
+                ...current
+            ]);
+            setNotice(result?.message || "Emergency Guardian assigned and logged on the consent timeline.");
+            setGuardianAddress("");
+        } catch (error) {
+            console.error("Assign guardian failed", error);
+            setErrorMessage(error.message || "Unable to assign emergency guardian.");
+        } finally {
+            setIsSubmittingGuardian(false);
+        }
+    }
+
     return (
         <div className="min-h-screen bg-[linear-gradient(145deg,_#f4fbff_0%,_#ffffff_45%,_#fff6ea_100%)] px-4 py-8 sm:px-6 lg:px-10">
             <div className="mx-auto max-w-7xl">
@@ -282,6 +353,27 @@ export default function PatientAccessControlPage() {
                                 {isSubmitting ? "Granting Access..." : "Grant Access Window"}
                             </button>
                         </form>
+
+                        <form onSubmit={handleAssignGuardian} className="mt-8 space-y-4 rounded-[1.75rem] border border-rose-400/30 bg-rose-500/5 p-5">
+                            <div>
+                                <h2 className="text-xl font-semibold text-rose-300">Designate Emergency Guardian</h2>
+                                <p className="mt-1 text-xs text-rose-200/70">Assign a trusted wallet (like a family member) that can approve "Break-Glass" emergency access for doctors if you are incapacitated.</p>
+                            </div>
+                            <input
+                                value={guardianAddress}
+                                onChange={(event) => setGuardianAddress(event.target.value)}
+                                className="w-full rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-white placeholder:text-slate-400 outline-none focus:border-rose-400/50"
+                                placeholder="Guardian wallet address (0x...)"
+                                required
+                            />
+                            <button
+                                type="submit"
+                                disabled={isSubmittingGuardian}
+                                className="rounded-full bg-rose-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {isSubmittingGuardian ? "Assigning Guardian..." : "Assign Guardian"}
+                            </button>
+                        </form>
                     </section>
 
                     <section className="space-y-6">
@@ -299,8 +391,8 @@ export default function PatientAccessControlPage() {
                         <div className="rounded-[2rem] border border-slate-200 bg-white/90 p-6 shadow-xl shadow-slate-200/60">
                             <div className="flex items-center justify-between gap-4">
                                 <div>
-                                    <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">Doctor Access Windows</p>
-                                    <h2 className="mt-2 text-2xl font-semibold text-slate-900">Current permissions</h2>
+                                    <p className="text-sm font-semibold uppercase tracking-[0.3em] text-sky-700">Access Requests</p>
+                                    <h2 className="mt-2 text-2xl font-semibold text-slate-900">Pending Approvals</h2>
                                 </div>
                                 <Link href="/patient" className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
                                     View Dashboard
@@ -308,37 +400,39 @@ export default function PatientAccessControlPage() {
                             </div>
 
                             <div className="mt-6 grid gap-4">
-                                {accessList.map((doctor) => (
-                                    <article key={`${doctor.doctorAddress}-${doctor.expiresAt}`} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5">
-                                        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                                            <div>
-                                                <div className="flex flex-wrap items-center gap-3">
-                                                    <h3 className="text-xl font-semibold text-slate-900">{doctor.name}</h3>
-                                                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeForStatus(doctor.status)}`}>
-                                                        {doctor.status}
-                                                    </span>
+                                {pendingRequests.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center rounded-[1.5rem] border border-slate-200 border-dashed py-12 text-center">
+                                        <p className="text-sm font-medium text-slate-500">No pending requests right now.</p>
+                                    </div>
+                                ) : (
+                                    pendingRequests.map((request) => (
+                                        <article key={request.requestId || request.doctorAddress} className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5">
+                                            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                                                <div>
+                                                    <div className="flex flex-wrap items-center gap-3">
+                                                        <h3 className="text-lg font-semibold text-slate-900">{request.doctorAddress.slice(0, 6)}...{request.doctorAddress.slice(-4)}</h3>
+                                                        <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+                                                            Pending
+                                                        </span>
+                                                    </div>
+                                                    <p className="mt-3 text-sm leading-6 text-slate-700">{request.reason || "No specific reason provided."}</p>
+                                                    <p className="mt-2 text-sm text-slate-500">Requested {formatDate(request.createdAt)}</p>
                                                 </div>
-                                                <p className="mt-2 text-sm text-slate-500">
-                                                    {doctor.specialty} • {doctor.doctorAddress}
-                                                </p>
-                                                <p className="mt-3 text-sm leading-6 text-slate-700">{doctor.reason}</p>
-                                                <p className="mt-2 text-sm text-slate-500">Expires {formatDate(doctor.expiresAt)}</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setDoctorAddress(request.doctorAddress);
+                                                        setReason(request.reason || "Approving access request");
+                                                        window.scrollTo({ top: 0, behavior: "smooth" });
+                                                    }}
+                                                    className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                                                >
+                                                    Review &amp; Fill Form
+                                                </button>
                                             </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => handleRevokeAccess(doctor)}
-                                                disabled={doctor.status === "revoked" || activeDoctorAddress === doctor.doctorAddress}
-                                                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                                            >
-                                                {doctor.status === "revoked"
-                                                    ? "Access Revoked"
-                                                    : activeDoctorAddress === doctor.doctorAddress
-                                                        ? "Revoking..."
-                                                        : "Revoke Access"}
-                                            </button>
-                                        </div>
-                                    </article>
-                                ))}
+                                        </article>
+                                    ))
+                                )}
                             </div>
                         </div>
 

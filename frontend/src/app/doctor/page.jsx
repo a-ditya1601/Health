@@ -419,13 +419,29 @@ export default function DoctorDashboardPage() {
                             className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-teal-400 focus:bg-white"
                         />
 
-                        <button
-                            type="submit"
-                            disabled={isSubmittingRequest}
-                            className="rounded-full bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                            {isSubmittingRequest ? "Requesting..." : "Request Access"}
-                        </button>
+                        <div className="flex flex-wrap gap-4">
+                            <button
+                                type="submit"
+                                disabled={isSubmittingRequest}
+                                className="rounded-full bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {isSubmittingRequest ? "Requesting..." : "Request Access"}
+                            </button>
+                            
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    if (newPatientAddress.trim()) {
+                                        router.push(`/doctor/patient/${newPatientAddress.trim()}`);
+                                    } else {
+                                        setRequestError("Enter Patient Wallet Address to view their profile.");
+                                    }
+                                }}
+                                className="rounded-full border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                            >
+                                Open Patient Profile
+                            </button>
+                        </div>
 
                         {requestState ? (
                             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
